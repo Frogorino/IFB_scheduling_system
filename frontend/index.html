@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IFB Scheduling Portal - Real-Time Manufacturing & Schedule Management</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+    <!-- APP HEADER: SINGLE UNIFIED COMPACT 56px NAVBAR -->
+    <header class="app-header">
+        <div class="header-container">
+            <div class="brand-block">
+                <div class="brand-logo-icon">IFB</div>
+                <div class="brand-text">
+                    <h1>Scheduling Portal</h1>
+                </div>
+            </div>
+
+            <nav class="app-nav">
+                <button class="nav-tab active" data-tab="dashboard" onclick="switchTab('dashboard')">
+                    <span class="nav-icon">📊</span> Executive Dashboard
+                </button>
+                <button class="nav-tab" data-tab="records" onclick="switchTab('records')">
+                    <span class="nav-icon">📋</span> Schedule Records
+                </button>
+                <button class="nav-tab" data-tab="analysis" onclick="switchTab('analysis')">
+                    <span class="nav-icon">📈</span> Company Analysis
+                </button>
+                <button class="nav-tab" data-tab="upload" onclick="switchTab('upload')">
+                    <span class="nav-icon">📤</span> Bulk Import
+                </button>
+            </nav>
+
+            <div class="header-status-block">
+                <div class="status-indicator" title="Backend connection status">
+                    <span class="status-dot"></span>
+                    <span id="backendStatusText">Live</span>
+                </div>
+                <div class="clock-display" id="liveClock">--:--:--</div>
+            </div>
+        </div>
+    </header>
+
+    <main class="main-content">
+
+        <!-- ============================================================== -->
+        <!-- TAB 1: EXECUTIVE DASHBOARD                                    -->
+        <!-- ============================================================== -->
+        <section id="tab-dashboard" class="tab-pane active">
+            
+            <!-- Dashboard Controls & Customer Selector -->
+            <div class="dashboard-controls-card">
+                <div class="control-group">
+                    <label for="customerSelect"><strong>Select Customer View:</strong></label>
+                    <select id="customerSelect" onchange="onCustomerSelectChange()">
+                        <option value="ALL">All Customers (Consolidated)</option>
+                    </select>
+                </div>
+
+                <div class="control-group">
+                    <label for="dashboardMonth"><strong>Month view:</strong></label>
+                    <input type="month" id="dashboardMonth" class="form-input" onchange="onDashboardMonthChange()">
+                </div>
+
+                <div class="quick-preset-btns">
+                    <span class="preset-label">Quick Switch:</span>
+                    <button type="button" class="chip-btn" onclick="quickSelectCustomer('ALL')">All Customers (Totals)</button>
+                </div>
+
+                <div class="header-action-links">
+                    <button class="btn-primary-sm" onclick="switchTab('upload')">+ Upload Schedule</button>
+                </div>
+            </div>
+
+            <!-- DASHBOARD CARDS IN EXACT USER REQUESTED ORDER -->
+            <div class="section-heading-row">
+                <h2>Customer Overview &amp; Monthly Horizon</h2>
+                <span class="badge-accent">Live Operational Metrics</span>
+            </div>
+
+            <div class="dashboard-grid">
+                <!-- 1. Customer -->
+                <div class="card card-customer">
+                    <div class="card-icon-wrap">🏢</div>
+                    <div class="card-info">
+                        <h3>Customer</h3>
+                        <p id="dashboardCustomer">All Customers (Consolidated)</p>
+                    </div>
+                </div>
+
+                <!-- 2. Previous Month Schedule -->
+                <div class="card">
+                    <div class="card-icon-wrap">⏮️</div>
+                    <div class="card-info">
+                        <h3 id="previousMonthLabel">Previous Month</h3>
+                        <p id="previousMonth">0</p>
+                    </div>
+                </div>
+
+                <!-- 3. Selected Month Schedule -->
+                <div class="card card-highlight">
+                    <div class="card-icon-wrap">📅</div>
+                    <div class="card-info">
+                        <h3 id="currentMonthLabel">Current Month</h3>
+                        <p id="currentMonth">0</p>
+                    </div>
+                </div>
+
+                <!-- 4. Upcoming Month Schedule -->
+                <div class="card">
+                    <div class="card-icon-wrap">⏭️</div>
+                    <div class="card-info">
+                        <h3 id="comingMonthLabel">Upcoming Month</h3>
+                        <p id="comingMonth">0</p>
+                    </div>
+                </div>
+
+                <!-- 5. Last Month Dispatch -->
+                <div class="card">
+                    <div class="card-icon-wrap">🚚</div>
+                    <div class="card-info">
+                        <h3 id="actualDispatchLabel">Last Month Dispatch</h3>
+                        <p id="actualDispatch">0</p>
+                    </div>
+                </div>
+
+                <!-- 6. Backlog -->
+                <div class="card card-balance">
+                    <div class="card-icon-wrap">⚖️</div>
+                    <div class="card-info">
+                        <h3 id="backlogLabel">Backlog</h3>
+                        <p id="balance">0</p>
+                    </div>
+                </div>
+
+                <!-- 7. Schedule Variance -->
+                <div class="card card-variance">
+                    <div class="card-icon-wrap">📉</div>
+                    <div class="card-info">
+                        <h3>Schedule Variance</h3>
+                        <p id="scheduleVariance">0.00%</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- PERFORMANCE & VARIANCE SUMMARY BANNER -->
+            <div class="kpi-summary-strip">
+                <div class="kpi-item">
+                    <span class="kpi-label">Achievement Rate</span>
+                    <div class="kpi-progress-wrap">
+                        <div class="progress-bar-bg">
+                            <div class="progress-bar-fill" id="dashboardAchievementBar" style="width: 0%;"></div>
+                        </div>
+                        <span class="kpi-val" id="dashboardAchievementText">0.00%</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- CUSTOMER ACTIVITY ALERT BANNER -->
+            <div class="activity-alert-banner" id="dashboardActivityBanner" style="display: none;">
+                <div class="activity-alert-icon">⚠️</div>
+                <div class="activity-alert-content">
+                    <strong id="dashboardActivityHeadline">Customer Order Notice</strong>
+                    <p id="dashboardActivitySubtext">Checking customer schedules...</p>
+                </div>
+                <div class="activity-alert-action">
+                    <button type="button" class="btn-outline-sm btn-activity-action" id="dashboardActivityBtn" onclick="navigateToCustomerActivity('zero_this_month')">Review Inactive Accounts &rarr;</button>
+                </div>
+            </div>
+
+            <!-- RECENT SCHEDULE SNAPSHOT -->
+            <div class="content-panel">
+                <div class="panel-header">
+                    <div>
+                        <h3>Current Schedule Snapshot</h3>
+                        <p class="panel-subtitle" id="dashboardPlanBanner">Monthly Plan: Oct'26 (FIRM) and (TENTATIVE 2 months)</p>
+                    </div>
+                    <button class="btn-outline-sm" onclick="switchTab('records')">View All Records &rarr;</button>
+                </div>
+                <div class="table-responsive">
+                    <table class="data-table">
+                        <thead>
+                            <tr class="super-header-row">
+                                <th colspan="11" class="th-info-group">Part &amp; Customer Information</th>
+                                <th id="snapshotFirmSuperHeader" class="th-firm-header">FIRM</th>
+                                <th colspan="2" class="th-tentative-super-header">TENTATIVE QTY</th>
+                            </tr>
+                            <tr>
+                                <th>Sl No</th>
+                                <th>Customer</th>
+                                <th>Customer code</th>
+                                <th>Customer name2</th>
+                                <th>PART No.</th>
+                                <th>Helper</th>
+                                <th>Customer Part No</th>
+                                <th>Line</th>
+                                <th>Model</th>
+                                <th>OEM's</th>
+                                <th>Description</th>
+                                <th id="snapshotMonth1Label">Oct-26</th>
+                                <th id="snapshotMonth2Label" class="th-tentative">Nov-26</th>
+                                <th id="snapshotMonth3Label" class="th-tentative">Dec-26</th>
+                            </tr>
+                        </thead>
+                        <tbody id="scheduleTable">
+                            <!-- Populated dynamically -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+        </section>
+
+        <!-- ============================================================== -->
+        <!-- TAB 3: MASTER SCHEDULE RECORDS TABLE                          -->
+        <!-- ============================================================== -->
+        <section id="tab-records" class="tab-pane">
+
+            <div class="content-panel">
+                <div class="panel-header-with-actions">
+                    <div>
+                        <h2>Master Production Schedule Records</h2>
+                        <p class="panel-subtitle" id="recordsPlanBanner">Monthly Plan: Oct'26 (FIRM) and (TENTATIVE 2 months)</p>
+                    </div>
+
+                    <div class="records-action-group">
+                        <button type="button" class="btn-outline-sm" onclick="exportRecordsToCSV()">📥 Export to CSV</button>
+                        <a href="/api/sample-template" download class="btn-outline-sm">📑 Download Template</a>
+                        <button type="button" class="btn-primary-sm" onclick="switchTab('upload')">+ Upload Schedule</button>
+                    </div>
+                </div>
+
+                <!-- FILTER & SEARCH BAR -->
+                <div class="table-toolbar">
+                    <div class="search-input-wrap">
+                        <span class="search-icon">🔍</span>
+                        <input type="text" id="tableSearchInput" placeholder="Search customer, part, version, month, or source..." oninput="filterMasterTable()">
+                    </div>
+
+                    <div class="filter-dropdown-wrap">
+                        <label for="recordsCustomerFilter">Customer:</label>
+                        <select id="recordsCustomerFilter" onchange="filterMasterTable()">
+                            <option value="ALL">All Customers</option>
+                        </select>
+                    </div>
+
+                    <div class="filter-dropdown-wrap">
+                        <label for="recordsVersionFilter">Version:</label>
+                        <select id="recordsVersionFilter" onchange="filterMasterTable()">
+                            <option value="ALL">All versions</option>
+                        </select>
+                    </div>
+
+                    <div class="filter-dropdown-wrap">
+                        <label for="recordsMonthFilter">Delivery month:</label>
+                        <select id="recordsMonthFilter" onchange="filterMasterTable()">
+                            <option value="ALL">All months</option>
+                        </select>
+                    </div>
+
+                    <div class="record-counter" id="recordCounterText">
+                        Showing 0 records
+                    </div>
+                </div>
+
+                <!-- FULL DATA TABLE -->
+                <div class="table-responsive">
+                    <table class="data-table master-records-table">
+                        <thead>
+                            <tr class="super-header-row">
+                                <th colspan="11" class="th-info-group">Part &amp; Customer Information</th>
+                                <th id="recordsFirmSuperHeader" class="th-firm-header">FIRM</th>
+                                <th colspan="2" class="th-tentative-super-header">TENTATIVE QTY</th>
+                                <th colspan="5" class="th-ops-header">Performance &amp; Status</th>
+                            </tr>
+                            <tr>
+                                <th>Sl No</th>
+                                <th>Customer</th>
+                                <th>Customer code</th>
+                                <th>Customer name2</th>
+                                <th>PART No.</th>
+                                <th>Helper</th>
+                                <th>Customer Part No</th>
+                                <th>Line</th>
+                                <th>Model</th>
+                                <th>OEM's</th>
+                                <th>Description</th>
+                                <th id="recordsMonth1Label">Oct-26</th>
+                                <th id="recordsMonth2Label" class="th-tentative">Nov-26</th>
+                                <th id="recordsMonth3Label" class="th-tentative">Dec-26</th>
+                                <th>Version</th>
+                                <th>Schedule Received</th>
+                                <th>Actual Dispatch</th>
+                                <th>Backlog</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="masterRecordsBody">
+                            <!-- Populated dynamically -->
+                        </tbody>
+                    </table>
+                </div>
+
+            </div>
+
+        </section>
+
+        <!-- ============================================================== -->
+        <!-- TAB 4: COMPANY ANALYSIS                                      -->
+        <!-- ============================================================== -->
+        <section id="tab-analysis" class="tab-pane">
+            <div class="section-heading-row">
+                <h2>Company Performance Analysis</h2>
+                <span class="badge-accent" id="analysisScopeLabel">Selected month and customer</span>
+            </div>
+
+            <!-- SHARED TOP CONTROLS: CUSTOMER & MONTH SELECTION -->
+            <div class="dashboard-controls-card analysis-controls">
+                <div class="control-group">
+                    <label for="analysisCustomerSelect"><strong>Customer View:</strong></label>
+                    <select id="analysisCustomerSelect" onchange="onAnalysisFilterChange()">
+                        <option value="ALL">All Customers</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <label for="analysisMonth"><strong>Delivery Month:</strong></label>
+                    <input type="month" id="analysisMonth" class="form-input" onchange="onAnalysisFilterChange()">
+                </div>
+                <div class="header-action-links">
+                    <button type="button" class="btn-outline-sm" onclick="switchTab('dashboard')">📊 Open Dashboard</button>
+                </div>
+            </div>
+
+            <!-- SUB-TAB NAVIGATION PILLS -->
+            <div class="analysis-subnav">
+                <button type="button" class="analysis-subtab-btn active" data-subtab="patterns" onclick="switchAnalysisSubtab('patterns')">
+                    <span class="subnav-icon">🎯</span> Customer Predictability &amp; Consistency
+                </button>
+                <button type="button" class="analysis-subtab-btn" data-subtab="wape" onclick="switchAnalysisSubtab('wape')">
+                    <span class="subnav-icon">🔄</span> Snapshot Revision Comparison (WAPE)
+                </button>
+                <button type="button" class="analysis-subtab-btn" data-subtab="fulfillment" onclick="switchAnalysisSubtab('fulfillment')">
+                    <span class="subnav-icon">🚚</span> On-Time Delivery Audit
+                </button>
+            </div>
+
+            <!-- ============================================================== -->
+            <!-- SUB-PANE 1: CUSTOMER PATTERNS & CONSISTENCY (DEFAULT)         -->
+            <!-- ============================================================== -->
+            <div id="subpane-patterns" class="analysis-subpane active">
+                <div class="consistency-kpi-grid">
+                    <article class="analysis-metric-card consistency-card">
+                        <h3>Consistency Score</h3>
+                        <div class="consistency-score-row">
+                            <span class="consistency-score-number" id="consistencyScoreVal">--</span>
+                            <span class="badge-status" id="consistencyBadge">Analyzing...</span>
+                        </div>
+                        <p class="analysis-metric-detail" id="consistencyScoreDetail">Predictability based on order volume variation</p>
+                    </article>
+
+                    <article class="analysis-metric-card consistency-card">
+                        <h3 title="Coefficient of Variation (CV = Standard Deviation / Mean)">Demand Volatility (CV)</h3>
+                        <p class="analysis-metric-value" id="consistencyCvVal">--</p>
+                        <p class="analysis-metric-detail" id="consistencyCvDetail">Lower CV indicates stable baseload demand</p>
+                    </article>
+
+                    <article class="analysis-metric-card consistency-card">
+                        <h3 title="Average percentage change between earliest tentative forecast and final firm order">Rolling Horizon Drift</h3>
+                        <p class="analysis-metric-value" id="consistencyDriftVal">--</p>
+                        <p class="analysis-metric-detail" id="consistencyDriftDetail">Tentative forecast erosion / expansion</p>
+                    </article>
+
+                    <article class="analysis-metric-card consistency-card">
+                        <h3>Forecast Bias</h3>
+                        <p class="analysis-metric-value" id="consistencyBiasVal">--</p>
+                        <p class="analysis-metric-detail" id="consistencyBiasDetail">Systematic tendency to over- or under-order</p>
+                    </article>
+                </div>
+
+                <!-- ACTIONABLE INSIGHT / ADVISORY CARD -->
+                <div class="consistency-insight-box" id="consistencyInsightBox">
+                    <div class="insight-icon">💡</div>
+                    <div class="insight-content">
+                        <h4>S&amp;OP &amp; Manufacturing Planning Recommendation</h4>
+                        <p id="consistencyInsightText">Upload schedule data to generate automated pattern insights.</p>
+                    </div>
+                </div>
+
+                <!-- CUSTOMER ACTIVITY & DORMANCY STRIP -->
+                <div class="activity-kpi-grid" id="activityKpiGrid">
+                    <div class="activity-kpi-card" data-filter="all" onclick="filterCustomerActivityTable('all')" role="button" tabindex="0" title="Click to view all accounts">
+                        <span class="activity-kpi-label">Total Accounts</span>
+                        <div class="activity-kpi-num" id="activityTotalAccounts">0</div>
+                        <span class="activity-kpi-sub">Across historical plans</span>
+                    </div>
+                    <div class="activity-kpi-card kpi-active" data-filter="active" onclick="filterCustomerActivityTable('active')" role="button" tabindex="0" title="Click to filter active accounts">
+                        <span class="activity-kpi-label">🟢 Active Accounts</span>
+                        <div class="activity-kpi-num" id="activityActiveCount">0</div>
+                        <span class="activity-kpi-sub">Demand scheduled this month</span>
+                    </div>
+                    <div class="activity-kpi-card kpi-zero" data-filter="zero_this_month" onclick="filterCustomerActivityTable('zero_this_month')" role="button" tabindex="0" title="Click to filter zero schedule accounts">
+                        <span class="activity-kpi-label">⚠️ Zero Schedule This Month</span>
+                        <div class="activity-kpi-num" id="activityZeroMonthCount">0</div>
+                        <span class="activity-kpi-sub">Recent customer, zero monthly order</span>
+                    </div>
+                    <div class="activity-kpi-card kpi-dormant" data-filter="dormant" onclick="filterCustomerActivityTable('dormant')" role="button" tabindex="0" title="Click to filter dormant accounts">
+                        <span class="activity-kpi-label">🔴 Dormant / Lapsed Accounts</span>
+                        <div class="activity-kpi-num" id="activityDormantCount">0</div>
+                        <span class="activity-kpi-sub">Inactive &ge; 60–90+ days or never</span>
+                    </div>
+                </div>
+
+                <!-- CUSTOMER PORTFOLIO RANKING (VISIBLE WHEN ALL CUSTOMERS SELECTED) -->
+                <div class="content-panel analysis-panel" id="customerPortfolioPanel">
+                    <div class="panel-header portfolio-panel-header">
+                        <div>
+                            <h3>Customer Predictability &amp; Activity Portfolio</h3>
+                            <p class="panel-subtitle">Comparative ranking of all customer accounts by activity status, demand consistency, and order history.</p>
+                        </div>
+                        <div class="activity-filter-pills" id="activityFilterPills">
+                            <span class="pill-label">Filter:</span>
+                            <button type="button" class="activity-pill-btn active" data-filter="all" onclick="filterCustomerActivityTable('all')">All (<span id="pillCountAll">0</span>)</button>
+                            <button type="button" class="activity-pill-btn pill-active" data-filter="active" onclick="filterCustomerActivityTable('active')">🟢 Active (<span id="pillCountActive">0</span>)</button>
+                            <button type="button" class="activity-pill-btn pill-zero" data-filter="zero_this_month" onclick="filterCustomerActivityTable('zero_this_month')">⚠️ Zero Month (<span id="pillCountZero">0</span>)</button>
+                            <button type="button" class="activity-pill-btn pill-dormant" data-filter="dormant" onclick="filterCustomerActivityTable('dormant')">🔴 Dormant (&ge;60-90d) (<span id="pillCountDormant">0</span>)</button>
+                        </div>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Rank</th>
+                                    <th>Customer Name</th>
+                                    <th>Activity Status</th>
+                                    <th id="portfolioSelectedMonthHeader">Selected Month Demand</th>
+                                    <th>Last Active Month</th>
+                                    <th>Consistency Score</th>
+                                    <th>Rating</th>
+                                    <th>Volatility (CV)</th>
+                                    <th>Lifetime Demand</th>
+                                    <th>Horizon Bias</th>
+                                </tr>
+                            </thead>
+                            <tbody id="customerPortfolioRows">
+                                <tr><td colspan="10">Loading customer portfolio…</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- ROLLING HORIZON DRIFT TABLE -->
+                <div class="content-panel analysis-panel" id="horizonDriftPanel">
+                    <div class="panel-header">
+                        <div>
+                            <h3>Rolling Horizon Forecast Stability (Tentative &rarr; Firm)</h3>
+                            <p class="panel-subtitle">Tracks how demand for each delivery month changed from initial tentative projections to final firm orders.</p>
+                        </div>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Delivery Month</th>
+                                    <th>Earliest Upload Date</th>
+                                    <th>Initial Tentative Forecast</th>
+                                    <th>Final Firm Order</th>
+                                    <th>Volume Drift</th>
+                                    <th>Drift %</th>
+                                    <th>Pattern Finding</th>
+                                </tr>
+                            </thead>
+                            <tbody id="horizonDriftRows">
+                                <tr><td colspan="7">Upload multiple schedule snapshots to evaluate rolling horizon stability.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- PART-LEVEL CONSISTENCY BREAKDOWN -->
+                <div class="content-panel analysis-panel" id="partConsistencyPanel" style="display: none;">
+                    <div class="panel-header">
+                        <div>
+                            <h3>Part-Level Demand Consistency Breakdown</h3>
+                            <p class="panel-subtitle">Month-over-month volume variation for parts ordered by selected customer.</p>
+                        </div>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Part No.</th>
+                                    <th>Description</th>
+                                    <th>Application</th>
+                                    <th>Months Observed</th>
+                                    <th>Total Demand</th>
+                                    <th>Monthly Mean</th>
+                                    <th>Min / Max</th>
+                                    <th>Volatility (CV)</th>
+                                    <th>Consistency Rating</th>
+                                </tr>
+                            </thead>
+                            <tbody id="partConsistencyRows">
+                                <tr><td colspan="9">Select a customer or upload data to view part-level consistency.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ============================================================== -->
+            <!-- SUB-PANE 2: SNAPSHOT REVISION COMPARISON (WAPE)               -->
+            <!-- ============================================================== -->
+            <div id="subpane-wape" class="analysis-subpane">
+                <div class="dashboard-controls-card snapshot-compare-controls">
+                    <div class="control-group">
+                        <label for="wapePreviousSnapshot"><strong>Earlier Excel Snapshot (Baseline):</strong></label>
+                        <select id="wapePreviousSnapshot" onchange="refreshHistoricalAnalytics()">
+                            <option value="">Select earlier snapshot</option>
+                        </select>
+                    </div>
+                    <div class="control-group">
+                        <label for="wapeCurrentSnapshot"><strong>Later Excel Snapshot (Comparison):</strong></label>
+                        <select id="wapeCurrentSnapshot" onchange="refreshHistoricalAnalytics()">
+                            <option value="">Select later snapshot</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="analysis-note" role="note">
+                    <strong>How WAPE works:</strong> Compares demand for the selected delivery month between the two chosen Excel uploads.
+                    WAPE is the sum of absolute part-level demand changes divided by total latest demand; it describes demand movement over time.
+                </div>
+                <div class="analysis-readiness" id="analysisReadiness" aria-live="polite">
+                    Loading schedule evidence…
+                </div>
+
+                <div class="wape-hero-card">
+                    <div class="wape-hero-info">
+                        <h3 title="Sum of absolute part-level demand changes divided by total latest demand">Demand Revision WAPE</h3>
+                        <p class="wape-hero-value" id="analysisWapeValue">-</p>
+                        <p class="analysis-metric-detail" id="analysisWapeDetail">Select two dated uploads for comparison</p>
+                    </div>
+                </div>
+
+                <div class="content-panel analysis-panel">
+                    <div class="panel-header">
+                        <div>
+                            <h3>Customer Demand Changes</h3>
+                            <p class="panel-subtitle">Part-level differences between the selected earlier and later Excel snapshots.</p>
+                        </div>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Customer</th>
+                                    <th>Part No.</th>
+                                    <th>Previous Demand</th>
+                                    <th>Latest Demand</th>
+                                    <th>Change</th>
+                                </tr>
+                            </thead>
+                            <tbody id="demandRevisionRows">
+                                <tr><td colspan="5">Upload schedule data to begin comparison.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ============================================================== -->
+            <!-- SUB-PANE 3: ON-TIME DELIVERY AUDIT                            -->
+            <!-- ============================================================== -->
+            <div id="subpane-fulfillment" class="analysis-subpane">
+                <div class="analysis-metrics-grid" style="grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));">
+                    <article class="analysis-metric-card">
+                        <h3>On-time Fulfillment by Quantity</h3>
+                        <p class="analysis-metric-value" id="analysisOnTimeQuantity">-</p>
+                        <p class="analysis-metric-detail" id="analysisOnTimeQuantityDetail">On-time committed units / total committed units</p>
+                    </article>
+                    <article class="analysis-metric-card">
+                        <h3>On-time Fulfillment by Part Line</h3>
+                        <p class="analysis-metric-value" id="analysisOnTimeLine">-</p>
+                        <p class="analysis-metric-detail" id="analysisOnTimeLineDetail">Fully completed lines / total committed lines</p>
+                    </article>
+                </div>
+
+                <div class="content-panel analysis-panel">
+                    <div class="panel-header">
+                        <div>
+                            <h3>Execution Gaps &amp; Delivery Exceptions</h3>
+                            <p class="panel-subtitle">Short and late dispatch evidence compared with recorded monthly commitments for this delivery month.</p>
+                        </div>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Customer</th>
+                                    <th>Part No.</th>
+                                    <th>Finding</th>
+                                    <th>Committed Qty</th>
+                                    <th>Dispatched Qty</th>
+                                    <th>Dispatch Date</th>
+                                </tr>
+                            </thead>
+                            <tbody id="companyExecutionRows">
+                                <tr><td colspan="6">Commitment and dispatch evidence is required to identify execution gaps.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ============================================================== -->
+        <!-- TAB 5: EXCEL BULK IMPORT                                      -->
+        <!-- ============================================================== -->
+        <section id="tab-upload" class="tab-pane">
+
+            <div class="content-panel">
+                <div class="panel-header">
+                    <div>
+                        <h2>Upload Schedule Data</h2>
+                        <p class="panel-subtitle">Upload your schedule to view it on the dashboard and in records. Existing saved schedules remain available.</p>
+                    </div>
+
+                    <a href="/api/sample-template" download class="btn-outline-sm">
+                        📥 Download Standard Template (.xlsx)
+                    </a>
+                </div>
+
+                <!-- DRAG AND DROP ZONE -->
+                <div class="upload-dropzone" id="dropZone" onclick="triggerFileInput()">
+                    <div class="upload-icon">📂</div>
+                    <h3>Choose an Excel schedule file</h3>
+                    <p>Drag and drop a filled schedule file here, or browse your computer. Supports .xlsx, .xls, and .csv.</p>
+                    <button type="button" class="btn-primary-sm" onclick="event.stopPropagation(); triggerFileInput();">
+                        Browse Files on Computer
+                    </button>
+                    <input type="file" id="excelFile" accept=".xlsx,.xls,.csv" style="display: none;" onchange="handleFileSelect(event)">
+                    <div id="selectedFileName" class="selected-file-badge" style="display: none;"></div>
+                </div>
+
+                <div class="snapshot-date-control">
+                    <label for="snapshotDate"><strong>Schedule snapshot date:</strong></label>
+                    <input type="date" id="snapshotDate" class="form-input">
+                    <span>For an archived sheet, choose its plan/revision date. New uploads default to today.</span>
+                </div>
+
+                <div class="upload-actions-bar">
+                    <button type="button" id="uploadButton" class="btn-submit" onclick="uploadExcel()">
+                        🚀 Upload &amp; Process Spreadsheet
+                    </button>
+                    <p id="uploadStatus" class="upload-status-text" aria-live="polite"></p>
+                </div>
+
+                <!-- COLUMN MAPPING GUIDE -->
+                <div class="guide-box">
+                    <h4>Supported Excel columns, including the IFB monthly plan layout</h4>
+                    <p>The header row is detected below title/revision rows; fields are matched by name:</p>
+                    <div class="headers-tags">
+                        <span class="tag">Sl No</span>
+                        <span class="tag">Customer</span>
+                        <span class="tag">Customer Code</span>
+                        <span class="tag">Customer name2</span>
+                        <span class="tag">PART No.</span>
+                        <span class="tag">Helper</span>
+                        <span class="tag">Customer Part No</span>
+                        <span class="tag">Line</span>
+                        <span class="tag">Model</span>
+                        <span class="tag">OEM's</span>
+                        <span class="tag">Description</span>
+                        <span class="tag">Oct-26 / Nov-26 / Dec-26 month columns</span>
+                        <span class="tag">Application</span>
+                        <span class="tag">Schedule Received Date</span>
+                        <span class="tag">Schedule Start Month</span>
+                        <span class="tag">Schedule End Month</span>
+                        <span class="tag">Schedule Version</span>
+                        <span class="tag">Delivery Month (e.g. Oct-26)</span>
+                        <span class="tag">Original Customer Schedule</span>
+                        <span class="tag">Current Customer Schedule</span>
+                        <span class="tag">Actual Production Qty</span>
+                        <span class="tag">Actual Dispatch Qty</span>
+                        <span class="tag">Dispatch Date</span>
+                        <span class="tag">Variance Reason</span>
+                        <span class="tag">Net Customer Revision</span>
+                        <span class="tag">Final Schedule Variance</span>
+                        <span class="tag">Achievement</span>
+                        <span class="tag">Backlog</span>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- IMPORTED EXCEL FILES LIST -->
+            <div class="content-panel" style="margin-top: 24px;">
+                <div class="panel-header">
+                    <div>
+                        <h3>Imported Excel Files &amp; Snapshots</h3>
+                        <p class="panel-subtitle">Manage uploaded schedule workbooks. Download original spreadsheets or delete snapshots.</p>
+                    </div>
+                    <button type="button" class="btn-outline-sm" onclick="loadImportedFilesList()">🔄 Refresh List</button>
+                </div>
+                <div class="table-responsive">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>File Name</th>
+                                <th>Snapshot Date</th>
+                                <th>Imported At</th>
+                                <th>Records Count</th>
+                                <th style="text-align: center;">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="importedFilesTableBody">
+                            <tr><td colspan="6" style="text-align: center; color: #94a3b8; padding: 20px;">Loading imported files...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+        </section>
+
+    </main> 
+
+    <!-- TOAST NOTIFICATION CONTAINER -->
+    <div id="toastContainer" class="toast-container"></div>
+
+    <script src="script.js"></script>
+
+</body>
+</html>

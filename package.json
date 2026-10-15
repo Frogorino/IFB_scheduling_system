@@ -1,0 +1,18 @@
+{
+  "name": "ifb-scheduling-system",
+  "version": "1.0.0",
+  "description": "IFB Real-Time Manufacturing Scheduling Portal",
+  "main": "backend/server.js",
+  "scripts": {
+    "start": "node backend/server.js",
+    "dev": "node backend/server.js",
+    "test": "node --test backend/*.test.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "cors": "^2.8.5",
+    "oracledb": "^6.10.0",
+    "multer": "^2.0.2",
+    "xlsx": "^0.18.5"
+  }
+}

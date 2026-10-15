@@ -1,0 +1,10 @@
+
+node_modules/
+upload/*
+!upload/.gitkeep
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+Thumbs.db
