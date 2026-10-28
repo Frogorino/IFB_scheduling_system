@@ -70,7 +70,10 @@
 
                 <div class="quick-preset-btns">
                     <span class="preset-label">Quick Switch:</span>
-                    <button type="button" class="chip-btn" onclick="quickSelectCustomer('ALL')">All Customers (Totals)</button>
+                    <button type="button" class="chip-btn" onclick="quickSelectCustomer('ALL')">All Customers</button>
+                    <button type="button" class="chip-btn" onclick="quickSelectMonth('2026-09')">📅 Sep'26 (Dispatch)</button>
+                    <button type="button" class="chip-btn" onclick="quickSelectMonth('2026-10')">📅 Oct'26 (Plan)</button>
+                    <button type="button" class="chip-btn" onclick="quickSelectMonth('2026-05')">📅 May'26</button>
                 </div>
 
                 <div class="header-action-links">
@@ -171,6 +174,7 @@
                 </div>
                 <div class="activity-alert-action">
                     <button type="button" class="btn-outline-sm btn-activity-action" id="dashboardActivityBtn" onclick="navigateToCustomerActivity('zero_this_month')">Review Inactive Accounts &rarr;</button>
+                    <button type="button" class="btn-outline-sm btn-activity-action" onclick="navigateToZeroSchedules()" title="Single out zero schedules in master records">Single Out Zero Schedules &rarr;</button>
                 </div>
             </div>
 
@@ -181,7 +185,15 @@
                         <h3>Current Schedule Snapshot</h3>
                         <p class="panel-subtitle" id="dashboardPlanBanner">Monthly Plan: Oct'26 (FIRM) and (TENTATIVE 2 months)</p>
                     </div>
-                    <button class="btn-outline-sm" onclick="switchTab('records')">View All Records &rarr;</button>
+                    <div class="snapshot-header-controls">
+                        <div class="snapshot-filter-pill-group">
+                            <span class="snapshot-filter-label">Delivery Schedule:</span>
+                            <button type="button" class="chip-filter-sm active" data-snapshot-filter="ALL" onclick="setDashboardSnapshotFilter('ALL')">All</button>
+                            <button type="button" class="chip-filter-sm" data-snapshot-filter="HIDE_ZERO" onclick="setDashboardSnapshotFilter('HIDE_ZERO')" title="Hide rows with zero schedule">🚫 Hide Zero</button>
+                            <button type="button" class="chip-filter-sm" data-snapshot-filter="ONLY_ZERO" onclick="setDashboardSnapshotFilter('ONLY_ZERO')" title="Single out rows with zero schedule">🎯 Zero Only</button>
+                        </div>
+                        <button class="btn-outline-sm" onclick="switchTab('records')">View All Records &rarr;</button>
+                    </div>
                 </div>
                 <div class="table-responsive">
                     <table class="data-table">
@@ -230,6 +242,17 @@
                     </div>
 
                     <div class="records-action-group">
+                        <div class="horizon-toggle-wrap">
+                            <span class="horizon-toggle-title">Horizon:</span>
+                            <div class="horizon-btn-group">
+                                <button type="button" class="btn-horizon-toggle active" id="btnHorizon3M" onclick="setHorizonMode('3M')" title="Standard 3-Month Plan (FIRM + 2 Tentative)">
+                                    🗓️ 3-Month Plan
+                                </button>
+                                <button type="button" class="btn-horizon-toggle" id="btnHorizon9M" onclick="setHorizonMode('9M')" title="Full 9-Month Horizon (Apr-26 to Dec-26)">
+                                    📊 All 9 Months
+                                </button>
+                            </div>
+                        </div>
                         <button type="button" class="btn-outline-sm" onclick="exportRecordsToCSV()">📥 Export to CSV</button>
                         <a href="/api/sample-template" download class="btn-outline-sm">📑 Download Template</a>
                         <button type="button" class="btn-primary-sm" onclick="switchTab('upload')">+ Upload Schedule</button>
@@ -259,47 +282,79 @@
 
                     <div class="filter-dropdown-wrap">
                         <label for="recordsMonthFilter">Delivery month:</label>
-                        <select id="recordsMonthFilter" onchange="filterMasterTable()">
-                            <option value="ALL">All months</option>
+                        <select id="recordsMonthFilter" onchange="onRecordsDeliveryMonthChange()">
+                            <option value="ALL">All Delivery Months (Apr–Dec 2026)</option>
                         </select>
                     </div>
 
+                    <div class="filter-dropdown-wrap">
+                        <label for="recordsScheduleFilter">Delivery Schedule:</label>
+                        <select id="recordsScheduleFilter" onchange="onDropdownFilterChange()">
+                            <option value="ALL">All Schedules</option>
+                            <option value="HIDE_ZERO">🚫 Hide Zero Schedules (> 0 only)</option>
+                            <option value="ONLY_ZERO">🎯 Single Out Zero Schedules (= 0 only)</option>
+                        </select>
+                    </div>
+
+                    <div class="filter-dropdown-wrap">
+                        <label for="recordsDispatchFilter">Actual Dispatch:</label>
+                        <select id="recordsDispatchFilter" onchange="onDropdownFilterChange()">
+                            <option value="ALL">All Dispatches</option>
+                            <option value="HIDE_ZERO">🚫 Hide Zero Dispatches (> 0 only)</option>
+                            <option value="ONLY_ZERO">🎯 Single Out Zero Dispatches (= 0 only)</option>
+                        </select>
+                    </div>
+
+                    <label class="dedup-toggle-wrap" id="dedupPartsToggleWrap" style="display: none;" title="Group by customer and part number to view 182 distinct master parts across all 9 months">
+                        <input type="checkbox" id="chkDedupParts" onchange="onDedupPartsChange()">
+                        <span>182 Master Parts</span>
+                    </label>
+
                     <div class="record-counter" id="recordCounterText">
                         Showing 0 records
+                    </div>
+
+                    <button type="button" class="btn-clear-filters" id="btnResetFilters" onclick="resetAllMasterFilters()" title="Reset search and filters">
+                        ↺ Reset
+                    </button>
+                </div>
+
+                <!-- QUICK FILTER PILLS BAR -->
+                <div class="quick-filter-strip">
+                    <span class="quick-filter-title">⚡ Quick Zero Filters:</span>
+                    <div class="quick-filter-pills">
+                        <button type="button" class="filter-pill active" data-filter-mode="all" onclick="setQuickZeroFilter('all')">
+                            All Records <span class="pill-badge" id="badgeCountAll">0</span>
+                        </button>
+                        <button type="button" class="filter-pill filter-pill-hide" data-filter-mode="hide_zero_schedules" onclick="setQuickZeroFilter('hide_zero_schedules')" title="Hide parts with zero delivery schedule">
+                            🚫 Hide Zero Schedules <span class="pill-badge" id="badgeCountActiveSched">0</span>
+                        </button>
+                        <button type="button" class="filter-pill filter-pill-hide" data-filter-mode="hide_zero_dispatches" onclick="setQuickZeroFilter('hide_zero_dispatches')" title="Hide parts with zero actual dispatch">
+                            🚫 Hide Zero Dispatches <span class="pill-badge" id="badgeCountActiveDisp">0</span>
+                        </button>
+                        <button type="button" class="filter-pill filter-pill-hide" data-filter-mode="hide_both_zero" onclick="setQuickZeroFilter('hide_both_zero')" title="Hide parts where both schedule and dispatch are zero">
+                            🚫 Hide Inactive (Both Zero) <span class="pill-badge" id="badgeCountActiveAny">0</span>
+                        </button>
+                        <button type="button" class="filter-pill filter-pill-target" data-filter-mode="only_zero_schedules" onclick="setQuickZeroFilter('only_zero_schedules')" title="Single out parts with zero delivery schedule">
+                            🎯 Zero Schedules Only <span class="pill-badge" id="badgeCountZeroSched">0</span>
+                        </button>
+                        <button type="button" class="filter-pill filter-pill-target" data-filter-mode="only_zero_dispatches" onclick="setQuickZeroFilter('only_zero_dispatches')" title="Single out parts with zero actual dispatch">
+                            🎯 Zero Dispatches Only <span class="pill-badge" id="badgeCountZeroDisp">0</span>
+                        </button>
+                        <button type="button" class="filter-pill filter-pill-target" data-filter-mode="both_zero" onclick="setQuickZeroFilter('both_zero')" title="Single out parts where both schedule and dispatch are zero">
+                            🎯 Both Zero Only <span class="pill-badge" id="badgeCountBothZero">0</span>
+                        </button>
+                        <button type="button" class="filter-pill filter-pill-alert" data-filter-mode="scheduled_not_dispatched" onclick="setQuickZeroFilter('scheduled_not_dispatched')" title="Single out parts scheduled but not yet dispatched">
+                            ⚠️ Scheduled, 0 Dispatch <span class="pill-badge" id="badgeCountSchedNoDisp">0</span>
+                        </button>
                     </div>
                 </div>
 
                 <!-- FULL DATA TABLE -->
                 <div class="table-responsive">
                     <table class="data-table master-records-table">
-                        <thead>
-                            <tr class="super-header-row">
-                                <th colspan="11" class="th-info-group">Part &amp; Customer Information</th>
-                                <th id="recordsFirmSuperHeader" class="th-firm-header">FIRM</th>
-                                <th colspan="2" class="th-tentative-super-header">TENTATIVE QTY</th>
-                                <th colspan="5" class="th-ops-header">Performance &amp; Status</th>
-                            </tr>
-                            <tr>
-                                <th>Sl No</th>
-                                <th>Customer</th>
-                                <th>Customer code</th>
-                                <th>Customer name2</th>
-                                <th>PART No.</th>
-                                <th>Helper</th>
-                                <th>Customer Part No</th>
-                                <th>Line</th>
-                                <th>Model</th>
-                                <th>OEM's</th>
-                                <th>Description</th>
-                                <th id="recordsMonth1Label">Oct-26</th>
-                                <th id="recordsMonth2Label" class="th-tentative">Nov-26</th>
-                                <th id="recordsMonth3Label" class="th-tentative">Dec-26</th>
-                                <th>Version</th>
-                                <th>Schedule Received</th>
-                                <th>Actual Dispatch</th>
-                                <th>Backlog</th>
-                                <th>Actions</th>
-                            </tr>
+                        <thead id="masterRecordsHead">
+                            <!-- Dynamically populated based on 3M vs 9M mode -->
                         </thead>
                         <tbody id="masterRecordsBody">
                             <!-- Populated dynamically -->
@@ -517,6 +572,16 @@
             <!-- SUB-PANE 2: SNAPSHOT REVISION COMPARISON (WAPE)               -->
             <!-- ============================================================== -->
             <div id="subpane-wape" class="analysis-subpane">
+                <div class="wape-target-month-banner" style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; padding: 10px 14px; background: #f1f5f9; border-radius: 6px; border-left: 4px solid #3b82f6;">
+                    <div>
+                        <span style="font-size: 0.9em; color: #475569;">Delivery Month for Revision Comparison:</span>
+                        <strong id="wapeActiveDeliveryMonth" style="font-size: 1.05em; color: #0f172a; margin-left: 6px;">Oct-26</strong>
+                    </div>
+                    <div style="display: flex; gap: 6px;">
+                        <button type="button" class="btn-xs" onclick="quickSelectMonth('2026-10')" title="Switch to October 2026 Monthly Plan">📅 Oct'26 (Plan)</button>
+                        <button type="button" class="btn-xs" onclick="quickSelectMonth('2026-09')" title="Switch to September 2026 Dispatch Data">📅 Sep'26 (Dispatch Data)</button>
+                    </div>
+                </div>
                 <div class="dashboard-controls-card snapshot-compare-controls">
                     <div class="control-group">
                         <label for="wapePreviousSnapshot"><strong>Earlier Excel Snapshot (Baseline):</strong></label>
@@ -540,11 +605,20 @@
                     Loading schedule evidence…
                 </div>
 
-                <div class="wape-hero-card">
-                    <div class="wape-hero-info">
-                        <h3 title="Sum of absolute part-level demand changes divided by total latest demand">Demand Revision WAPE</h3>
-                        <p class="wape-hero-value" id="analysisWapeValue">-</p>
-                        <p class="analysis-metric-detail" id="analysisWapeDetail">Select two dated uploads for comparison</p>
+                <div class="metrics-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-bottom: 20px;">
+                    <div class="wape-hero-card" style="margin-bottom: 0;">
+                        <div class="wape-hero-info">
+                            <h3 title="Compares schedule revisions between two separate file uploads for the selected month">1. Revision WAPE (Forecast Churn)</h3>
+                            <p class="wape-hero-value" id="analysisWapeValue">-</p>
+                            <p class="analysis-metric-detail" id="analysisWapeDetail">Select two dated uploads for comparison</p>
+                        </div>
+                    </div>
+                    <div class="wape-hero-card" style="margin-bottom: 0; background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%); border-color: #86efac;">
+                        <div class="wape-hero-info">
+                            <h3 title="Measures how actual dispatches deviated from customer schedule within the selected month" style="color: #166534;">2. Execution WAPE (Dispatch vs Schedule)</h3>
+                            <p class="wape-hero-value" id="analysisDispatchWapeValue" style="color: #15803d;">-</p>
+                            <p class="analysis-metric-detail" id="analysisDispatchWapeDetail" style="color: #166534;">Customer Schedule vs Actual Dispatch for selected month</p>
+                        </div>
                     </div>
                 </div>
 
@@ -662,38 +736,40 @@
                 </div>
 
                 <!-- COLUMN MAPPING GUIDE -->
+                <!-- COLUMN MAPPING GUIDE -->
                 <div class="guide-box">
-                    <h4>Supported Excel columns, including the IFB monthly plan layout</h4>
-                    <p>The header row is detected below title/revision rows; fields are matched by name:</p>
+                    <h4>Flexible Multi-Format Excel &amp; Dispatch Support</h4>
+                    <p>The parser automatically detects headers, merges stacked multi-row parent headers, and maps columns flexibly:</p>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; margin-top: 12px; margin-bottom: 12px;">
+                        <div style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 12px;">
+                            <strong style="color: #38bdf8;">Format 1: Multi-Month Plan</strong>
+                            <p style="font-size: 0.82rem; color: #94a3b8; margin: 4px 0 0 0;">Part details with rolling month-year columns (e.g. <code>Oct-26</code>, <code>Nov-26</code>, <code>Dec-26</code>). First month is Firm, subsequent months are Tentative.</p>
+                        </div>
+                        <div style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 12px;">
+                            <strong style="color: #34d399;">Format 2: Stacked Multi-Month Dispatch Data</strong>
+                            <p style="font-size: 0.82rem; color: #94a3b8; margin: 4px 0 0 0;">Row 1 has merged Month headers (e.g. <code>Apr-26</code>, <code>May-26</code>) spanning <code>Customer Schedule</code>, <code>Company Schedule</code>, and <code>Dispatch QTY</code> sub-columns.</p>
+                        </div>
+                    </div>
+                    <p style="margin-top: 8px; font-size: 0.85rem; color: #cbd5e1;">Recognized field aliases and tags:</p>
                     <div class="headers-tags">
                         <span class="tag">Sl No</span>
-                        <span class="tag">Customer</span>
+                        <span class="tag">Customer / SoldToParty / Client</span>
                         <span class="tag">Customer Code</span>
                         <span class="tag">Customer name2</span>
-                        <span class="tag">PART No.</span>
+                        <span class="tag">PART No. / Material / Item Code</span>
                         <span class="tag">Helper</span>
                         <span class="tag">Customer Part No</span>
                         <span class="tag">Line</span>
                         <span class="tag">Model</span>
                         <span class="tag">OEM's</span>
                         <span class="tag">Description</span>
-                        <span class="tag">Oct-26 / Nov-26 / Dec-26 month columns</span>
-                        <span class="tag">Application</span>
-                        <span class="tag">Schedule Received Date</span>
-                        <span class="tag">Schedule Start Month</span>
-                        <span class="tag">Schedule End Month</span>
-                        <span class="tag">Schedule Version</span>
-                        <span class="tag">Delivery Month (e.g. Oct-26)</span>
-                        <span class="tag">Original Customer Schedule</span>
-                        <span class="tag">Current Customer Schedule</span>
-                        <span class="tag">Actual Production Qty</span>
-                        <span class="tag">Actual Dispatch Qty</span>
+                        <span class="tag">Monthly Columns (e.g. Oct-26, Apr-26)</span>
+                        <span class="tag">Customer Schedule / Actual customer schedule</span>
+                        <span class="tag">Company Commitment / Schedule</span>
+                        <span class="tag">Dispatch QTY / Actual Dispatch</span>
                         <span class="tag">Dispatch Date</span>
-                        <span class="tag">Variance Reason</span>
-                        <span class="tag">Net Customer Revision</span>
-                        <span class="tag">Final Schedule Variance</span>
-                        <span class="tag">Achievement</span>
-                        <span class="tag">Backlog</span>
+                        <span class="tag">Backlog / Balance</span>
+                        <span class="tag">Auto-Sheet Discovery</span>
                     </div>
                 </div>
 
@@ -734,7 +810,7 @@
     <!-- TOAST NOTIFICATION CONTAINER -->
     <div id="toastContainer" class="toast-container"></div>
 
-    <script src="script.js"></script>
+    <script src="script.js?v=9m_horizon"></script>
 
 </body>
 </html>

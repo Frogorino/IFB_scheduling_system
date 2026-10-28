@@ -13,7 +13,12 @@ const {
     calculateCustomerActivity,
     getSnapshotEffectiveDate
 } = require("./schedule-analytics");
-const { getScheduleRecords } = require("./excel-header");
+const {
+    getScheduleRecords,
+    findBestScheduleSheet,
+    formatMonthLabel
+} = require("./excel-header");
+const { normalizeCustomer } = require("./customer-normalizer");
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
@@ -118,44 +123,61 @@ function getHeaderIndex(headers, aliases) {
 }
 
 function getMonthKeyFromHeader(header) {
-    const match = normalizeHeader(header).match(/^([a-z]+)\s+(\d{2}|\d{4})$/);
+    if (!header) return null;
+    const normalized = normalizeHeader(header);
+    if (/^(?:monthly plan|annual plan|plan|ifb|rev|revision|tentative|firm)\b/.test(normalized)) {
+        return null;
+    }
+    const match = normalized.match(/\b(january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sep|october|oct|november|nov|december|dec)\s*['\- ]?\s*(\d{2}|\d{4})\b/);
     if (!match) return null;
 
-    const monthIndex = [
-        "jan", "feb", "mar", "apr", "may", "jun",
-        "jul", "aug", "sep", "oct", "nov", "dec"
-    ].findIndex((month) => month === match[1].slice(0, 3));
+    const months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+    const monthIndex = months.indexOf(match[1].slice(0, 3));
     if (monthIndex === -1) return null;
 
-    const year = match[2].length === 2 ? Number(`20${match[2]}`) : Number(match[2]);
+    const yearStr = match[2];
+    const year = yearStr.length === 2 ? Number(`20${yearStr}`) : Number(yearStr);
     return `${year}-${String(monthIndex + 1).padStart(2, "0")}`;
 }
 
 function getMonthMetricFromHeader(header) {
+    if (!header) return null;
     const normalized = normalizeHeader(header);
-    const match = normalized.match(/\b(january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sep|october|oct|november|nov|december|dec)\s+(\d{2}|\d{4})\b/);
+    if (/^(?:monthly plan|annual plan|plan|ifb|rev|revision|tentative|firm)\b/.test(normalized)) {
+        return null;
+    }
+    const match = normalized.match(/\b(january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sep|october|oct|november|nov|december|dec)\s*['\- ]?\s*(\d{2}|\d{4})\b/);
     if (!match) return null;
 
-    const monthIndex = [
-        "jan", "feb", "mar", "apr", "may", "jun",
-        "jul", "aug", "sep", "oct", "nov", "dec"
-    ].indexOf(match[1].slice(0, 3));
-    const year = match[2].length === 2 ? Number(`20${match[2]}`) : Number(match[2]);
-    const monthKey = `${year}-${String(monthIndex + 1).padStart(2, "0")}`;
-    const prefix = normalized.slice(0, match.index).trim();
-    const suffix = normalized.slice(match.index + match[0].length).trim();
-    const metricLabel = `${prefix} ${suffix}`.trim();
+    const months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+    const monthIndex = months.indexOf(match[1].slice(0, 3));
+    if (monthIndex === -1) return null;
 
-    if (/^(?:company )?commitment(?: qty| quantity)?$/.test(metricLabel)) {
-        return { monthKey, metric: "commitment" };
-    }
-    if (/^(?:(?:actual )?dispatch)(?: qty| quantity)?$/.test(metricLabel)) {
+    const yearStr = match[2];
+    const year = yearStr.length === 2 ? Number(`20${yearStr}`) : Number(yearStr);
+    const monthKey = `${year}-${String(monthIndex + 1).padStart(2, "0")}`;
+    const remainder = (normalized.slice(0, match.index) + " " + normalized.slice(match.index + match[0].length)).trim().replace(/\s+/g, " ");
+
+    if (/\b(?:dispatch|dispatches|delivery|delivered|actual dispatch|billed|invoiced)\b/.test(remainder)) {
+        if (/\bdate\b/.test(remainder)) {
+            return { monthKey, metric: "dispatchDate" };
+        }
         return { monthKey, metric: "dispatch" };
     }
-    if (/^(?:(?:actual )?dispatch) date$/.test(metricLabel)) {
-        return { monthKey, metric: "dispatchDate" };
+
+    if (/\b(?:customer|actual customer|client)\s*(?:sche?d?u[le]+|demand|order|po)\b/.test(remainder)) {
+        return { monthKey, metric: "customerSchedule" };
     }
-    return null;
+
+    if (/\b(?:company commitment|commitment|firm|internal schedule|plant schedule)\b/.test(remainder)) {
+        return { monthKey, metric: "commitment" };
+    }
+
+    if (/\b(?:sche?d?u[le]+|plan|demand)\b/.test(remainder) || remainder === "") {
+        return { monthKey, metric: "schedule" };
+    }
+
+    return { monthKey, metric: "schedule" };
 }
 
 function mapScheduleRow(record) {
@@ -168,10 +190,18 @@ function mapScheduleRow(record) {
     const customerIndex = getHeaderIndex(keys, [
         "customer",
         "customer name",
-        "customer_name"
+        "customer_name",
+        "soldtoparty",
+        "sold to party",
+        "soldtoparty name",
+        "party",
+        "party name",
+        "client",
+        "account",
+        "buyer"
     ]);
     const customerName2Index = getHeaderIndex(keys, ["customer name2", "customer name 2", "customer_name2"]);
-    const customerCodeIndex = getHeaderIndex(keys, ["customer code", "customer id", "cust code", "cust id"]);
+    const customerCodeIndex = getHeaderIndex(keys, ["customer code", "customer id", "cust code", "cust id", "soldtoparty"]);
     const customerPartNoIndex = getHeaderIndex(keys, ["customer part no", "customer part no.", "customer part number", "cust part no"]);
     const helperIndex = getHeaderIndex(keys, ["helper"]);
     const lineIndex = getHeaderIndex(keys, ["line", "prod line", "production line"]);
@@ -184,7 +214,17 @@ function mapScheduleRow(record) {
         "part number no",
         "part",
         "part_no",
-        "part no number"
+        "part no number",
+        "part#",
+        "part #",
+        "material",
+        "material no",
+        "material number",
+        "item",
+        "item code",
+        "fg part",
+        "fg code",
+        "fg part no"
     ]);
     const applicationIndex = getHeaderIndex(keys, ["application", "product application"]);
     const descriptionIndex = getHeaderIndex(keys, ["description", "product description", "part description"]);
@@ -310,48 +350,86 @@ function mapScheduleRow(record) {
     const monthlyDispatchDates = {};
 
     keys.forEach((key, index) => {
-        const monthKey = getMonthKeyFromHeader(key);
-        if (monthKey && hasCellValue(values[index])) monthlySchedules[monthKey] = toNumber(values[index]);
-        const monthMetric = getMonthMetricFromHeader(key);
-        if (monthMetric?.metric === "commitment" && hasCellValue(values[index])) {
-            monthlyCommitments[monthMetric.monthKey] = toNumber(values[index]);
-        } else if (monthMetric?.metric === "dispatch" && hasCellValue(values[index])) {
-            monthlyDispatches[monthMetric.monthKey] = toNumber(values[index]);
-        } else if (monthMetric?.metric === "dispatchDate" && hasCellValue(values[index])) {
-            monthlyDispatchDates[monthMetric.monthKey] = String(values[index] || "").trim();
+        const val = values[index];
+        if (!hasCellValue(val)) return;
+
+        const metricInfo = getMonthMetricFromHeader(key);
+        if (metricInfo) {
+            const num = toNumber(val);
+            if (metricInfo.metric === "customerSchedule") {
+                monthlySchedules[metricInfo.monthKey] = num;
+            } else if (metricInfo.metric === "commitment") {
+                monthlyCommitments[metricInfo.monthKey] = num;
+            } else if (metricInfo.metric === "dispatch") {
+                monthlyDispatches[metricInfo.monthKey] = num;
+            } else if (metricInfo.metric === "dispatchDate") {
+                monthlyDispatchDates[metricInfo.monthKey] = String(val || "").trim();
+            } else if (metricInfo.metric === "schedule") {
+                if (monthlySchedules[metricInfo.monthKey] !== undefined) {
+                    monthlyCommitments[metricInfo.monthKey] = num;
+                } else {
+                    monthlySchedules[metricInfo.monthKey] = num;
+                }
+            }
         }
     });
+
+    const sortedMonths = Object.keys(monthlySchedules).sort();
 
     const customer = customerIndex !== -1 ? values[customerIndex] : "";
     const customerName2 = customerName2Index !== -1 ? values[customerName2Index] : "";
     const customerCode = customerCodeIndex !== -1 ? values[customerCodeIndex] : customer;
     const partNo = partIndex !== -1 ? values[partIndex] : "";
     const version = versionIndex !== -1 ? values[versionIndex] : "Current";
-    const previousMonth = previousMonthIndex !== -1 ? toNumber(values[previousMonthIndex]) : 0;
-    const currentMonth = scheduleIndex !== -1 ? toNumber(values[scheduleIndex]) : 0;
-    const comingMonth = comingMonthIndex !== -1 ? toNumber(values[comingMonthIndex]) : 0;
-    const companyCommitmentProvided = commitmentIndex !== -1 && hasCellValue(values[commitmentIndex]);
-    const actualDispatchProvided = dispatchIndex !== -1 && hasCellValue(values[dispatchIndex]);
-    const companyCommitment = commitmentIndex !== -1 ? toNumber(values[commitmentIndex]) : currentMonth;
-    const actualDispatch = dispatchIndex !== -1 ? toNumber(values[dispatchIndex]) : 0;
-    const deliveryMonth = deliveryMonthIndex !== -1 ? String(values[deliveryMonthIndex] || "").trim() : "";
+
+    let deliveryMonth = deliveryMonthIndex !== -1 ? String(values[deliveryMonthIndex] || "").trim() : "";
+    if (!deliveryMonth && sortedMonths.length > 0) {
+        deliveryMonth = formatMonthLabel(sortedMonths[0]);
+    }
     const deliveryMonthKey = getMonthKeyFromHeader(deliveryMonth);
+
+    let previousMonth = previousMonthIndex !== -1 ? toNumber(values[previousMonthIndex]) : 0;
+    let currentMonth = scheduleIndex !== -1 ? toNumber(values[scheduleIndex]) : 0;
+    let comingMonth = comingMonthIndex !== -1 ? toNumber(values[comingMonthIndex]) : 0;
+
+    if (scheduleIndex === -1 && sortedMonths.length > 0) {
+        const monthsWithDispatches = Object.keys(monthlyDispatches);
+        const primaryMonth = monthsWithDispatches.length > 0
+            ? sortedMonths[sortedMonths.length - 1]
+            : sortedMonths[0];
+        currentMonth = monthlySchedules[primaryMonth] ?? 0;
+        const pIdx = sortedMonths.indexOf(primaryMonth);
+        if (pIdx > 0) previousMonth = monthlySchedules[sortedMonths[pIdx - 1]] ?? 0;
+        if (pIdx < sortedMonths.length - 1) comingMonth = monthlySchedules[sortedMonths[pIdx + 1]] ?? 0;
+    }
+
     if (deliveryMonthKey && scheduleIndex !== -1 && hasCellValue(values[scheduleIndex])
         && !Object.prototype.hasOwnProperty.call(monthlySchedules, deliveryMonthKey)) {
         monthlySchedules[deliveryMonthKey] = currentMonth;
     }
-    
+
+    const companyCommitmentProvided = commitmentIndex !== -1 && hasCellValue(values[commitmentIndex]);
+    const actualDispatchProvided = dispatchIndex !== -1 && hasCellValue(values[dispatchIndex]);
+    const companyCommitment = commitmentIndex !== -1
+        ? toNumber(values[commitmentIndex])
+        : (sortedMonths.length > 0 && monthlyCommitments[sortedMonths[0]] !== undefined ? monthlyCommitments[sortedMonths[0]] : currentMonth);
+    const actualDispatch = dispatchIndex !== -1
+        ? toNumber(values[dispatchIndex])
+        : (sortedMonths.length > 0 && monthlyDispatches[sortedMonths[0]] !== undefined ? monthlyDispatches[sortedMonths[0]] : 0);
+
     const backlogValue = balanceIndex !== -1 ? values[balanceIndex] : null;
     const balance = backlogValue !== null && String(backlogValue).trim() !== ""
         ? toNumber(backlogValue)
-        : null;
+        : (companyCommitment - actualDispatch);
+
+    const normCustomer = normalizeCustomer(customer, customerName2, customerCode);
 
     return {
         serialNo: serialNoIndex !== -1 ? String(values[serialNoIndex] || "").trim() : "",
-        customer: String(customerName2 || customer || "").trim(),
-        customerGroup: String(customer || "").trim(),
-        customerName2: String(customerName2 || "").trim(),
-        customerCode: String(customerCode || "").trim(),
+        customer: normCustomer.name,
+        customerGroup: normCustomer.group,
+        customerName2: normCustomer.legalName || String(customerName2 || "").trim(),
+        customerCode: normCustomer.code || String(customerCode || "").trim(),
         customerPartNo: customerPartNoIndex !== -1 ? String(values[customerPartNoIndex] || "").trim() : "",
         helper: helperIndex !== -1 ? String(values[helperIndex] || "").trim() : "",
         line: lineIndex !== -1 ? String(values[lineIndex] || "").trim() : "",
@@ -468,20 +546,35 @@ function loadScheduleSnapshots() {
 }
 
 function parseScheduleWorkbook(workbook) {
-    const sheetName = workbook.SheetNames[0];
-    const rows = getScheduleRecords(workbook.Sheets[sheetName], XLSX);
+    const { sheetName, sheet } = findBestScheduleSheet(workbook, XLSX);
+    if (!sheet) {
+        return [];
+    }
+    const rawRows = getScheduleRecords(sheet, XLSX);
 
-    if (!rows.length) {
+    if (!rawRows.length) {
         return [];
     }
 
-    return rows
+    const rows = rawRows
         .map((row) => mapScheduleRow(row))
-        .filter((row) => row.customer || row.partNo || row.version || row.previousMonth || row.currentMonth || row.comingMonth || row.actualDispatch || row.balance);
+        .filter((row) => {
+            const cust = String(row.customer || "").trim();
+            const part = String(row.partNo || "").trim();
+            if (!cust || !part) return false;
+            if (/^(?:total|grand total|product line|summary|totals)\b/i.test(cust)) return false;
+            if (/^(?:oct'\d+|schedule qty|schedule value)/i.test(part)) return false;
+            const hasMonthly = Object.keys(row.monthlySchedules || {}).length > 0;
+            const hasLegacySchedule = row.currentMonth !== 0 || row.previousMonth !== 0 || row.comingMonth !== 0 || row.actualDispatch !== 0;
+            return hasMonthly || hasLegacySchedule;
+        });
+
+    rows.sheetName = sheetName;
+    return rows;
 }
 
 function getDashboardSummary(rows) {
-    const customerList = Array.from(new Set(rows.map((row) => row.customer).filter(Boolean)));
+    const customerList = Array.from(new Set(rows.map((row) => row.customer).filter(Boolean))).sort((a, b) => a.localeCompare(b));
     const parts = new Set(rows.map((row) => row.partNo).filter(Boolean)).size;
     const totalPreviousMonth = rows.reduce((sum, row) => sum + (row.previousMonth || 0), 0);
     const totalCurrentMonth = rows.reduce((sum, row) => sum + (row.currentMonth || row.customerSchedule || 0), 0);
@@ -701,7 +794,7 @@ app.delete("/api/schedule-row/:index", (req, res) => {
 });
 
 app.get("/master-data", (req, res) => {
-    const customersByCode = new Map();
+    const customersByName = new Map();
     const catalog = {};
 
     const allKnownRows = [
@@ -709,9 +802,17 @@ app.get("/master-data", (req, res) => {
         ...scheduleSnapshots.flatMap(snapshot => snapshot.rows || [])
     ];
     for (const row of allKnownRows) {
-        const name = row.customer || row.customerCode;
-        const code = row.customerCode || makeCustomerCode(name);
-        if (name && !customersByCode.has(code)) customersByCode.set(code, { name, code });
+        const norm = normalizeCustomer(row.customer, row.customerName2, row.customerCode);
+        const name = norm.name || String(row.customer || "").trim();
+        const code = norm.code || row.customerCode || makeCustomerCode(name);
+        if (name && !customersByName.has(name)) {
+            customersByName.set(name, {
+                name,
+                code,
+                group: norm.group,
+                legalName: norm.legalName
+            });
+        }
         if (row.partNo) {
             const application = row.application || "Imported";
             if (!catalog[application]) catalog[application] = [];
@@ -724,8 +825,12 @@ app.get("/master-data", (req, res) => {
         }
     }
 
+    const sortedCustomers = Array.from(customersByName.values()).sort((a, b) =>
+        a.name.localeCompare(b.name)
+    );
+
     res.json({
-        customers: Array.from(customersByCode.values()),
+        customers: sortedCustomers,
         catalog,
         varianceReasons: []
     });
@@ -978,11 +1083,18 @@ app.post("/upload-excel", upload.single("excelFile"), async (req, res) => {
         latestScheduleData = updatedRows;
         const summary = getDashboardSummary(updatedRows);
 
+        const detectedMonths = Array.from(new Set(importedRows.flatMap(r => Object.keys(r.monthlySchedules || {})))).sort();
+        const hasDispatches = importedRows.some(r => Object.keys(r.monthlyDispatches || {}).length > 0);
+
         return res.json({
             message: dbSaved
                 ? "Excel file uploaded and schedule data processed successfully."
                 : "Excel file uploaded successfully. Local processing completed; Oracle DB save is not available.",
             filename: req.file.originalname,
+            sheetName: rows.sheetName || "",
+            importedCount: importedRows.length,
+            detectedMonths,
+            hasDispatches,
             snapshotId,
             snapshotDate,
             summary,
@@ -1017,11 +1129,32 @@ app.use((error, req, res, next) => {
     return res.status(400).json({ message });
 });
 
+function normalizeRowCustomer(row) {
+    if (!row) return row;
+    const norm = normalizeCustomer(row.customer, row.customerName2, row.customerCode);
+    return {
+        ...row,
+        customer: norm.name,
+        customerGroup: norm.group,
+        customerName2: norm.legalName || row.customerName2 || "",
+        customerCode: norm.code || row.customerCode || ""
+    };
+}
+
 async function startServer() {
-    latestScheduleData = loadScheduleData();
+    latestScheduleData = loadScheduleData().map(normalizeRowCustomer);
     console.log(`Loaded ${latestScheduleData.length} saved schedule records.`);
-    scheduleSnapshots = loadScheduleSnapshots();
+    scheduleSnapshots = loadScheduleSnapshots().map(s => ({
+        ...s,
+        rows: (s.rows || []).map(normalizeRowCustomer)
+    }));
     console.log(`Loaded ${scheduleSnapshots.length} historical schedule snapshots.`);
+    try {
+        saveScheduleData(latestScheduleData);
+        saveScheduleSnapshotData(scheduleSnapshots);
+    } catch (saveErr) {
+        console.warn("Could not re-persist normalized records during startup:", saveErr.message);
+    }
     await initializeDatabase();
     app.listen(PORT, () => {
         console.log(`Server running on port ${PORT}`);

@@ -1,3 +1,5 @@
+const { normalizeCustomer } = require("./customer-normalizer");
+
 function normalizeMonth(value) {
     const text = String(value || "").trim();
     if (/^\d{4}-\d{2}$/.test(text)) return text;
@@ -137,9 +139,18 @@ function isHigherVersion(candidate, existing) {
 }
 
 function matchesCustomer(row, customer) {
-    return !customer || customer === "ALL"
-        || String(row.customer || "").trim() === customer
-        || String(row.customerCode || "").trim() === customer;
+    if (!customer || customer === "ALL") return true;
+    const rowCustomer = String(row.customer || "").trim();
+    const rowCode = String(row.customerCode || "").trim();
+    const rowGroup = String(row.customerGroup || "").trim();
+    if (rowCustomer === customer || rowCode === customer || rowGroup === customer) return true;
+
+    const rowNorm = normalizeCustomer(rowCustomer, row.customerName2, rowCode);
+    const targetNorm = normalizeCustomer(customer);
+    return rowNorm.name === targetNorm.name
+        || rowNorm.name === customer
+        || rowNorm.group === customer
+        || rowNorm.code === customer;
 }
 
 function getDemandForMonth(row, month) {
@@ -230,7 +241,11 @@ function calculateDemandRevisionWape(snapshots, month, customer, comparison = {}
                 comparedParts: 0,
                 revisions: [],
                 previousSnapshotDate: getSnapshotEffectiveDate(previous.snapshot),
-                latestSnapshotDate: getSnapshotEffectiveDate(latest.snapshot)
+                latestSnapshotDate: getSnapshotEffectiveDate(latest.snapshot),
+                previousSource: previous.snapshot.source || "",
+                latestSource: latest.snapshot.source || "",
+                previousDemandRows: previous.demand.size,
+                latestDemandRows: latest.demand.size
             };
         }
     } else {
@@ -263,7 +278,7 @@ function calculateDemandRevisionWape(snapshots, month, customer, comparison = {}
         latestDemandTotal += after;
         if (before !== after) {
             revisions.push({
-                customer: row.customer || row.customerName2 || row.customerCode || "Unknown",
+                customer: normalizeCustomer(row.customer, row.customerName2, row.customerCode).name || "Unknown",
                 partNo: row.partNo || "-",
                 previousDemand: before,
                 latestDemand: after,
@@ -408,7 +423,7 @@ function calculateOnTime(snapshots, month, customer, now = new Date()) {
         if (dispatched === null) {
             missingDispatchData = true;
             issues.push({
-                customer: row.customer || row.customerName2 || row.customerCode || "Unknown",
+                customer: normalizeCustomer(row.customer, row.customerName2, row.customerCode).name || "Unknown",
                 partNo: row.partNo || "-",
                 type: "Missing dispatch quantity",
                 committedQty: committed,
@@ -426,7 +441,7 @@ function calculateOnTime(snapshots, month, customer, now = new Date()) {
         if (dispatched > 0 && !dispatchDate) {
             missingDispatchDates = true;
             issues.push({
-                customer: row.customer || row.customerName2 || row.customerCode || "Unknown",
+                customer: normalizeCustomer(row.customer, row.customerName2, row.customerCode).name || "Unknown",
                 partNo: row.partNo || "-",
                 type: "Missing dispatch date",
                 committedQty: committed,
@@ -447,7 +462,7 @@ function calculateOnTime(snapshots, month, customer, now = new Date()) {
         if (dispatched > 0 && dispatchDate > dueDate) issueTypes.push("Late dispatch");
         if (issueTypes.length) {
             issues.push({
-                customer: row.customer || row.customerName2 || row.customerCode || "Unknown",
+                customer: normalizeCustomer(row.customer, row.customerName2, row.customerCode).name || "Unknown",
                 partNo: row.partNo || "-",
                 type: issueTypes.join(" + "),
                 committedQty: committed,
@@ -455,6 +470,17 @@ function calculateOnTime(snapshots, month, customer, now = new Date()) {
                 dispatchDate: dispatchDate ? dispatchDate.toISOString().slice(0, 10) : ""
             });
         }
+    }
+
+    let fulfilledQty = 0;
+    let fulfilledLines = 0;
+    for (const { row, committed } of commitments) {
+        if (committed <= 0) continue;
+        const dispatched = getMonthQuantity(
+            row, "monthlyDispatches", month, "actualDispatch", "actualDispatchProvided"
+        ) || 0;
+        fulfilledQty += Math.min(dispatched, committed);
+        if (dispatched >= committed) fulfilledLines += 1;
     }
 
     if (!committedTotal) {
@@ -467,6 +493,14 @@ function calculateOnTime(snapshots, month, customer, now = new Date()) {
             status: missingDispatchDates ? "missing_dispatch_dates" : "missing_dispatch_quantities",
             dueDate: dueDate.toISOString().slice(0, 10),
             committedQty: committedTotal,
+            monthlyFulfillment: {
+                quantityRate: (fulfilledQty / committedTotal) * 100,
+                lineRate: (fulfilledLines / commitmentLines) * 100,
+                committedQty: committedTotal,
+                fulfilledQty,
+                commitmentLines,
+                fulfilledLines
+            },
             issues
         };
     }
@@ -480,20 +514,163 @@ function calculateOnTime(snapshots, month, customer, now = new Date()) {
         onTimeQty: onTimeQuantity,
         commitmentLines,
         onTimeLines,
+        monthlyFulfillment: {
+            quantityRate: (fulfilledQty / committedTotal) * 100,
+            lineRate: (fulfilledLines / commitmentLines) * 100,
+            committedQty: committedTotal,
+            fulfilledQty,
+            commitmentLines,
+            fulfilledLines
+        },
         snapshotDate: selectedSnapshot.snapshotDate,
         issues
     };
 }
 
+function calculatePlanAcceptanceWape(snapshots, month, customer) {
+    for (let i = snapshots.length - 1; i >= 0; i--) {
+        const snapshot = snapshots[i];
+        let absDiffTotal = 0;
+        let customerTotal = 0;
+        let comparedParts = 0;
+        const variances = [];
+
+        for (const row of snapshot.rows || []) {
+            if (!matchesCustomer(row, customer)) continue;
+            let custSch = null;
+            if (row.monthlySchedules && Object.prototype.hasOwnProperty.call(row.monthlySchedules, month)) {
+                custSch = Number(row.monthlySchedules[month]);
+            }
+            let compSch = null;
+            if (row.monthlyCommitments && Object.prototype.hasOwnProperty.call(row.monthlyCommitments, month)) {
+                compSch = Number(row.monthlyCommitments[month]);
+            }
+
+            if (custSch === null || compSch === null || !Number.isFinite(custSch) || !Number.isFinite(compSch)) {
+                continue;
+            }
+
+            const diff = Math.abs(compSch - custSch);
+            absDiffTotal += diff;
+            customerTotal += custSch;
+            comparedParts += 1;
+
+            if (diff > 0) {
+                variances.push({
+                    customer: normalizeCustomer(row.customer, row.customerName2, row.customerCode).name || "Unknown",
+                    partNo: row.partNo || "-",
+                    customerSchedule: custSch,
+                    companyCommitment: compSch,
+                    variance: compSch - custSch,
+                    absDiff: diff
+                });
+            }
+        }
+
+        if (customerTotal > 0 && comparedParts > 0) {
+            variances.sort((a, b) => b.absDiff - a.absDiff);
+            return {
+                value: (absDiffTotal / customerTotal) * 100,
+                status: "available",
+                source: snapshot.source,
+                customerTotal,
+                absDiffTotal,
+                comparedParts,
+                variances: variances.slice(0, 30)
+            };
+        }
+    }
+
+    return {
+        value: null,
+        status: "no_data_for_month",
+        comparedParts: 0,
+        variances: []
+    };
+}
+
+function calculateDispatchExecutionWape(snapshots, month, customer) {
+    for (let i = snapshots.length - 1; i >= 0; i--) {
+        const snapshot = snapshots[i];
+        let absDiffTotal = 0;
+        let scheduleTotal = 0;
+        let comparedParts = 0;
+        const partVariances = [];
+
+        for (const row of snapshot.rows || []) {
+            if (!matchesCustomer(row, customer)) continue;
+            let sch = null;
+            if (row.monthlySchedules && Object.prototype.hasOwnProperty.call(row.monthlySchedules, month)) {
+                sch = Number(row.monthlySchedules[month]);
+            } else if (normalizeMonth(row.deliveryMonth) === month) {
+                sch = Number(row.customerSchedule ?? row.currentMonth ?? 0);
+            }
+            if (sch === null || !Number.isFinite(sch)) continue;
+
+            let disp = 0;
+            if (row.monthlyDispatches && Object.prototype.hasOwnProperty.call(row.monthlyDispatches, month)) {
+                disp = Number(row.monthlyDispatches[month]) || 0;
+            } else if (normalizeMonth(row.deliveryMonth) === month) {
+                disp = Number(row.actualDispatch || 0);
+            }
+
+            const diff = Math.abs(disp - sch);
+            absDiffTotal += diff;
+            scheduleTotal += sch;
+            comparedParts += 1;
+
+            if (sch > 0 || disp > 0) {
+                partVariances.push({
+                    customer: normalizeCustomer(row.customer, row.customerName2, row.customerCode).name || "Unknown",
+                    partNo: row.partNo || "-",
+                    schedule: sch,
+                    dispatch: disp,
+                    variance: disp - sch,
+                    absDiff: diff
+                });
+            }
+        }
+
+        if (scheduleTotal > 0) {
+            partVariances.sort((a, b) => b.absDiff - a.absDiff);
+            return {
+                value: (absDiffTotal / scheduleTotal) * 100,
+                status: "available",
+                source: snapshot.source,
+                scheduleTotal,
+                absDiffTotal,
+                comparedParts,
+                partVariances: partVariances.slice(0, 30)
+            };
+        }
+    }
+
+    return {
+        value: null,
+        status: "no_data_for_month",
+        comparedParts: 0,
+        partVariances: []
+    };
+}
+
 function calculateScheduleAnalytics(snapshots, month, customer, now = new Date(), comparison = {}) {
     if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) {
-        return { month, customer: customer || "ALL", demandRevisionWape: { value: null, status: "invalid_month" }, onTime: { quantityRate: null, lineRate: null, status: "invalid_month" } };
+        return {
+            month,
+            customer: customer || "ALL",
+            demandRevisionWape: { value: null, status: "invalid_month" },
+            planAcceptanceWape: { value: null, status: "invalid_month" },
+            dispatchExecutionWape: { value: null, status: "invalid_month" },
+            onTime: { quantityRate: null, lineRate: null, status: "invalid_month" }
+        };
     }
 
     return {
         month,
         customer: customer || "ALL",
         demandRevisionWape: calculateDemandRevisionWape(snapshots, month, customer, comparison),
+        planAcceptanceWape: calculatePlanAcceptanceWape(snapshots, month, customer),
+        dispatchExecutionWape: calculateDispatchExecutionWape(snapshots, month, customer),
         onTime: calculateOnTime(snapshots, month, customer, now)
     };
 }
@@ -502,8 +679,8 @@ function getDistinctCustomers(snapshots) {
     const customers = new Set();
     for (const snapshot of snapshots) {
         for (const row of snapshot.rows || []) {
-            const name = String(row.customer || row.customerName2 || row.customerCode || "").trim();
-            if (name) customers.add(name);
+            const norm = normalizeCustomer(row.customer, row.customerName2, row.customerCode);
+            if (norm.name) customers.add(norm.name);
         }
     }
     return Array.from(customers).sort();
@@ -552,9 +729,9 @@ function calculateConsistencyForSeries(demands) {
             mean: 0,
             stdDev: 0,
             cv: 0,
-            score: 100,
-            rating: "Zero Demand",
-            status: "consistent",
+            score: null,
+            rating: "Nil Activity",
+            status: "neutral",
             min: 0,
             max: 0,
             total: 0
@@ -650,6 +827,84 @@ function calculateHorizonDrift(snapshots, customer) {
     }
 
     if (!horizonRecords.length) {
+        const singleFileRecords = [];
+        let totalForecast = 0;
+        let totalDelivered = 0;
+
+        for (const month of allMonths) {
+            let custDemand = 0;
+            let dispatchDemand = 0;
+            let planDemand = 0;
+
+            for (const snapshot of sorted) {
+                for (const row of snapshot.rows || []) {
+                    if (!matchesCustomer(row, customer)) continue;
+                    if (row.monthlySchedules && Object.prototype.hasOwnProperty.call(row.monthlySchedules, month)) {
+                        custDemand += Number(row.monthlySchedules[month]) || 0;
+                    } else if (normalizeMonth(row.deliveryMonth) === month) {
+                        custDemand += Number(row.customerSchedule ?? row.currentMonth ?? 0) || 0;
+                    }
+
+                    if (row.monthlyDispatches && Object.prototype.hasOwnProperty.call(row.monthlyDispatches, month)) {
+                        dispatchDemand += Number(row.monthlyDispatches[month]) || 0;
+                    } else if (normalizeMonth(row.deliveryMonth) === month) {
+                        dispatchDemand += Number(row.actualDispatch || 0) || 0;
+                    }
+
+                    if (row.monthlyCommitments && Object.prototype.hasOwnProperty.call(row.monthlyCommitments, month)) {
+                        planDemand += Number(row.monthlyCommitments[month]) || 0;
+                    } else if (normalizeMonth(row.deliveryMonth) === month) {
+                        planDemand += Number(row.companyCommitment || 0) || 0;
+                    }
+                }
+            }
+
+            if (custDemand > 0 || dispatchDemand > 0 || planDemand > 0) {
+                const targetFulfillment = dispatchDemand > 0 ? dispatchDemand : planDemand;
+                const change = targetFulfillment - custDemand;
+                const driftPct = custDemand > 0 ? (change / custDemand) * 100 : 0;
+                totalForecast += custDemand;
+                totalDelivered += targetFulfillment;
+
+                singleFileRecords.push({
+                    deliveryMonth: month,
+                    earliestForecastDate: "Customer Schedule",
+                    earliestDemand: custDemand,
+                    latestDemand: targetFulfillment,
+                    stages: [
+                        { snapshotDate: "Customer Schedule", source: "Customer Schedule", demand: custDemand },
+                        { snapshotDate: dispatchDemand > 0 ? "Actual Dispatch" : "Committed Plan", source: dispatchDemand > 0 ? "Actual Dispatch" : "Committed Plan", demand: targetFulfillment }
+                    ],
+                    change,
+                    driftPct: Math.round(driftPct * 100) / 100,
+                    basis: dispatchDemand > 0 ? "Actual Dispatch" : "Committed Plan"
+                });
+            }
+        }
+
+        if (singleFileRecords.length > 0 && totalForecast > 0 && totalDelivered > 0) {
+            const overallChange = totalDelivered - totalForecast;
+            const biasPct = (overallChange / totalForecast) * 100;
+            const avgDrift = singleFileRecords.reduce((sum, r) => sum + r.driftPct, 0) / singleFileRecords.length;
+
+            let biasType = "Balanced Forecast";
+            if (biasPct < -10) {
+                biasType = `Over-Forecasting (${Math.round(biasPct)}% Demand Inflation)`;
+            } else if (biasPct > 10) {
+                biasType = `Under-Forecasting (+${Math.round(biasPct)}% Demand Surges)`;
+            }
+
+            return {
+                status: "available",
+                averageDriftPct: Math.round(avgDrift * 100) / 100,
+                biasPct: Math.round(biasPct * 100) / 100,
+                biasType,
+                evaluatedMonthsCount: singleFileRecords.length,
+                basis: "forecast_vs_actual",
+                records: singleFileRecords
+            };
+        }
+
         return {
             status: sorted.length < 2 ? "needs_multiple_snapshots" : "no_overlapping_months",
             averageDriftPct: null,
@@ -820,18 +1075,24 @@ function calculateCustomerConsistency(snapshots, customer = "ALL") {
         }
         const custConsistency = calculateConsistencyForSeries(custTotals);
         const custHorizon = calculateHorizonDrift(snapshots, custName);
+        const hasOrders = custConsistency.total > 0;
         return {
             customer: custName,
-            score: custConsistency.score,
-            rating: custConsistency.rating,
-            status: custConsistency.status,
-            cv: custConsistency.cv,
+            score: hasOrders ? custConsistency.score : null,
+            rating: hasOrders ? custConsistency.rating : "Nil Activity",
+            status: hasOrders ? custConsistency.status : "neutral",
+            cv: hasOrders ? custConsistency.cv : undefined,
             meanDemand: custConsistency.mean,
             totalDemand: custConsistency.total,
-            biasPct: custHorizon.biasPct,
-            biasType: custHorizon.biasType
+            biasPct: hasOrders ? custHorizon.biasPct : null,
+            biasType: hasOrders ? custHorizon.biasType : "-"
         };
-    }).sort((a, b) => (b.score || 0) - (a.score || 0));
+    }).sort((a, b) => {
+        const scoreA = a.score !== null && a.score !== undefined ? a.score : -1;
+        const scoreB = b.score !== null && b.score !== undefined ? b.score : -1;
+        if (scoreB !== scoreA) return scoreB - scoreA;
+        return (b.totalDemand || 0) - (a.totalDemand || 0);
+    });
 
     return {
         customer: customer || "ALL",
@@ -881,7 +1142,8 @@ function calculateCustomerActivity(snapshots, targetMonth) {
 
     // Evaluate latest snapshot rows for the latest view of each month
     for (const row of latestSnapshot.rows || []) {
-        const cust = String(row.customer || row.customerName2 || row.customerCode || "").trim();
+        const norm = normalizeCustomer(row.customer, row.customerName2, row.customerCode);
+        const cust = norm.name;
         if (!cust || !customerMonthlyActive.has(cust)) continue;
 
         const custMap = customerMonthlyActive.get(cust);
@@ -902,7 +1164,8 @@ function calculateCustomerActivity(snapshots, targetMonth) {
     // Also scan earlier snapshots in case an earlier snapshot recorded positive demand for an older month
     for (const snapshot of sorted) {
         for (const row of snapshot.rows || []) {
-            const cust = String(row.customer || row.customerName2 || row.customerCode || "").trim();
+            const norm = normalizeCustomer(row.customer, row.customerName2, row.customerCode);
+            const cust = norm.name;
             if (!cust || !customerMonthlyActive.has(cust)) continue;
             const custMap = customerMonthlyActive.get(cust);
             if (row.monthlySchedules) {
@@ -944,7 +1207,7 @@ function calculateCustomerActivity(snapshots, targetMonth) {
         let lastActiveMonth = null;
         let monthsInactive = null;
         let status = "never_ordered";
-        let statusLabel = "No Order History";
+        let statusLabel = "Nil Activity";
         let statusSeverity = "neutral";
 
         if (targetMonthDemand > 0) {
@@ -977,7 +1240,7 @@ function calculateCustomerActivity(snapshots, targetMonth) {
             monthsInactive = null;
         } else {
             status = "never_ordered";
-            statusLabel = "No Order History";
+            statusLabel = "Nil Activity";
             statusSeverity = "neutral";
             monthsInactive = null;
         }

@@ -6,5 +6,6 @@ upload/*
 .env.*
 !.env.example
 *.log
+*.xlsx
 .DS_Store
 Thumbs.db
