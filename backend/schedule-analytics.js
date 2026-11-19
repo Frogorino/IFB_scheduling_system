@@ -1,5 +1,3 @@
-const { normalizeCustomer } = require("./customer-normalizer");
-
 function normalizeMonth(value) {
     const text = String(value || "").trim();
     if (/^\d{4}-\d{2}$/.test(text)) return text;
@@ -24,93 +22,11 @@ function getMonthEnd(month) {
     return new Date(Date.UTC(year, monthNumber, 0, 23, 59, 59, 999));
 }
 
-function extractDateFromText(text) {
-    if (!text) return null;
-    const str = String(text).trim();
-
-    // 1. Check DD.MM.YYYY or DD-MM-YYYY or DD/MM/YYYY
-    const dmyMatch = str.match(/(?:^|[^\d])(\d{1,2})[._/-](\d{1,2})[._/-](\d{4})(?:[^\d]|$)/);
-    if (dmyMatch) {
-        let day = Number(dmyMatch[1]);
-        let month = Number(dmyMatch[2]);
-        const year = Number(dmyMatch[3]);
-        if (day > 12 && month <= 12) {
-            // Day.Month.Year
-        } else if (month > 12 && day <= 12) {
-            [day, month] = [month, day];
-        }
-        if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
-            return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-        }
-    }
-
-    // 2. Check named month + year (e.g. Sep26, Sep-26, Oct26)
-    const monthNames = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
-    const namedMatch = str.match(/(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s._-]*(\d{2,4})/i);
-    if (namedMatch) {
-        const monthIndex = monthNames.indexOf(namedMatch[1].slice(0, 3).toLowerCase());
-        if (monthIndex !== -1) {
-            const rawYear = namedMatch[2];
-            const year = rawYear.length === 2 ? Number(`20${rawYear}`) : Number(rawYear);
-            return `${year}-${String(monthIndex + 1).padStart(2, "0")}-01`;
-        }
-    }
-
-    return null;
-}
-
-function getSnapshotEffectiveDate(snapshot) {
-    if (!snapshot) return "2000-01-01";
-    const sourceDate = extractDateFromText(snapshot.source);
-    if (sourceDate) return sourceDate;
-
-    const validSnapshotDate = snapshot.snapshotDate && /^\d{4}-\d{2}-\d{2}$/.test(snapshot.snapshotDate)
-        ? snapshot.snapshotDate
-        : null;
-
-    let earliestRowMonth = null;
-    for (const row of snapshot.rows || []) {
-        if (row.monthlySchedules) {
-            for (const key of Object.keys(row.monthlySchedules)) {
-                const norm = normalizeMonth(key);
-                if (norm && (!earliestRowMonth || norm < earliestRowMonth)) {
-                    earliestRowMonth = norm;
-                }
-            }
-        }
-        const dm = normalizeMonth(row.deliveryMonth);
-        if (dm && (!earliestRowMonth || dm < earliestRowMonth)) {
-            earliestRowMonth = dm;
-        }
-    }
-
-    if (validSnapshotDate) {
-        if (!earliestRowMonth || validSnapshotDate.slice(0, 7) <= earliestRowMonth) {
-            return validSnapshotDate;
-        }
-    }
-
-    if (earliestRowMonth) {
-        return `${earliestRowMonth}-01`;
-    }
-
-    if (validSnapshotDate) {
-        return validSnapshotDate;
-    }
-
-    const captured = String(snapshot.capturedAt || "");
-    if (/^\d{4}-\d{2}-\d{2}/.test(captured)) {
-        return captured.slice(0, 10);
-    }
-    return "2000-01-01";
-}
-
 function getSnapshotOrderKey(snapshot) {
-    const effectiveDate = getSnapshotEffectiveDate(snapshot);
     const uploadedAt = String(snapshot.capturedAt || snapshot.snapshotDate || "");
     const uploadTime = uploadedAt.includes("T") ? uploadedAt.slice(uploadedAt.indexOf("T")) : "";
-    const snapshotId = String(snapshot.snapshotId || "");
-    return `${effectiveDate}${uploadTime}_${snapshotId}`;
+    const snapshotDate = String(snapshot.snapshotDate || uploadedAt.slice(0, 10));
+    return `${snapshotDate}${uploadTime}`;
 }
 
 function getEntityKey(row) {
@@ -139,18 +55,9 @@ function isHigherVersion(candidate, existing) {
 }
 
 function matchesCustomer(row, customer) {
-    if (!customer || customer === "ALL") return true;
-    const rowCustomer = String(row.customer || "").trim();
-    const rowCode = String(row.customerCode || "").trim();
-    const rowGroup = String(row.customerGroup || "").trim();
-    if (rowCustomer === customer || rowCode === customer || rowGroup === customer) return true;
-
-    const rowNorm = normalizeCustomer(rowCustomer, row.customerName2, rowCode);
-    const targetNorm = normalizeCustomer(customer);
-    return rowNorm.name === targetNorm.name
-        || rowNorm.name === customer
-        || rowNorm.group === customer
-        || rowNorm.code === customer;
+    return !customer || customer === "ALL"
+        || String(row.customer || "").trim() === customer
+        || String(row.customerCode || "").trim() === customer;
 }
 
 function getDemandForMonth(row, month) {
@@ -200,7 +107,7 @@ function getDemandSnapshotTimeline(snapshots, month, customer) {
             if (signature !== null) previousSignature = signature;
             return {
                 snapshotId: snapshot.snapshotId || `${snapshot.capturedAt || snapshot.snapshotDate}`,
-                snapshotDate: getSnapshotEffectiveDate(snapshot),
+                snapshotDate: snapshot.snapshotDate,
                 capturedAt: snapshot.capturedAt || snapshot.snapshotDate,
                 source: snapshot.source || "",
                 rowCount: (snapshot.rows || []).length,
@@ -231,7 +138,7 @@ function calculateDemandRevisionWape(snapshots, month, customer, comparison = {}
         if (previous === latest) {
             return { value: null, status: "select_two_snapshots", comparedParts: 0, revisions: [] };
         }
-        if (getSnapshotOrderKey(previous.snapshot) > getSnapshotOrderKey(latest.snapshot)) {
+        if (getSnapshotOrderKey(previous.snapshot) >= getSnapshotOrderKey(latest.snapshot)) {
             return { value: null, status: "snapshots_out_of_order", comparedParts: 0, revisions: [] };
         }
         if (previous.demand.size === 0 || latest.demand.size === 0) {
@@ -240,12 +147,8 @@ function calculateDemandRevisionWape(snapshots, month, customer, comparison = {}
                 status: "snapshot_has_no_month_data",
                 comparedParts: 0,
                 revisions: [],
-                previousSnapshotDate: getSnapshotEffectiveDate(previous.snapshot),
-                latestSnapshotDate: getSnapshotEffectiveDate(latest.snapshot),
-                previousSource: previous.snapshot.source || "",
-                latestSource: latest.snapshot.source || "",
-                previousDemandRows: previous.demand.size,
-                latestDemandRows: latest.demand.size
+                previousSnapshotDate: previous.snapshot.snapshotDate,
+                latestSnapshotDate: latest.snapshot.snapshotDate
             };
         }
     } else {
@@ -278,7 +181,7 @@ function calculateDemandRevisionWape(snapshots, month, customer, comparison = {}
         latestDemandTotal += after;
         if (before !== after) {
             revisions.push({
-                customer: normalizeCustomer(row.customer, row.customerName2, row.customerCode).name || "Unknown",
+                customer: row.customer || row.customerName2 || row.customerCode || "Unknown",
                 partNo: row.partNo || "-",
                 previousDemand: before,
                 latestDemand: after,
@@ -295,8 +198,8 @@ function calculateDemandRevisionWape(snapshots, month, customer, comparison = {}
         revisions,
         previousSnapshotId: previous.snapshot.snapshotId,
         latestSnapshotId: latest.snapshot.snapshotId,
-        previousSnapshotDate: getSnapshotEffectiveDate(previous.snapshot),
-        latestSnapshotDate: getSnapshotEffectiveDate(latest.snapshot),
+        previousSnapshotDate: previous.snapshot.snapshotDate,
+        latestSnapshotDate: latest.snapshot.snapshotDate,
         previousSource: previous.snapshot.source || "",
         latestSource: latest.snapshot.source || ""
     };
@@ -423,7 +326,7 @@ function calculateOnTime(snapshots, month, customer, now = new Date()) {
         if (dispatched === null) {
             missingDispatchData = true;
             issues.push({
-                customer: normalizeCustomer(row.customer, row.customerName2, row.customerCode).name || "Unknown",
+                customer: row.customer || row.customerName2 || row.customerCode || "Unknown",
                 partNo: row.partNo || "-",
                 type: "Missing dispatch quantity",
                 committedQty: committed,
@@ -441,7 +344,7 @@ function calculateOnTime(snapshots, month, customer, now = new Date()) {
         if (dispatched > 0 && !dispatchDate) {
             missingDispatchDates = true;
             issues.push({
-                customer: normalizeCustomer(row.customer, row.customerName2, row.customerCode).name || "Unknown",
+                customer: row.customer || row.customerName2 || row.customerCode || "Unknown",
                 partNo: row.partNo || "-",
                 type: "Missing dispatch date",
                 committedQty: committed,
@@ -462,7 +365,7 @@ function calculateOnTime(snapshots, month, customer, now = new Date()) {
         if (dispatched > 0 && dispatchDate > dueDate) issueTypes.push("Late dispatch");
         if (issueTypes.length) {
             issues.push({
-                customer: normalizeCustomer(row.customer, row.customerName2, row.customerCode).name || "Unknown",
+                customer: row.customer || row.customerName2 || row.customerCode || "Unknown",
                 partNo: row.partNo || "-",
                 type: issueTypes.join(" + "),
                 committedQty: committed,
@@ -470,17 +373,6 @@ function calculateOnTime(snapshots, month, customer, now = new Date()) {
                 dispatchDate: dispatchDate ? dispatchDate.toISOString().slice(0, 10) : ""
             });
         }
-    }
-
-    let fulfilledQty = 0;
-    let fulfilledLines = 0;
-    for (const { row, committed } of commitments) {
-        if (committed <= 0) continue;
-        const dispatched = getMonthQuantity(
-            row, "monthlyDispatches", month, "actualDispatch", "actualDispatchProvided"
-        ) || 0;
-        fulfilledQty += Math.min(dispatched, committed);
-        if (dispatched >= committed) fulfilledLines += 1;
     }
 
     if (!committedTotal) {
@@ -493,14 +385,6 @@ function calculateOnTime(snapshots, month, customer, now = new Date()) {
             status: missingDispatchDates ? "missing_dispatch_dates" : "missing_dispatch_quantities",
             dueDate: dueDate.toISOString().slice(0, 10),
             committedQty: committedTotal,
-            monthlyFulfillment: {
-                quantityRate: (fulfilledQty / committedTotal) * 100,
-                lineRate: (fulfilledLines / commitmentLines) * 100,
-                committedQty: committedTotal,
-                fulfilledQty,
-                commitmentLines,
-                fulfilledLines
-            },
             issues
         };
     }
@@ -514,767 +398,641 @@ function calculateOnTime(snapshots, month, customer, now = new Date()) {
         onTimeQty: onTimeQuantity,
         commitmentLines,
         onTimeLines,
-        monthlyFulfillment: {
-            quantityRate: (fulfilledQty / committedTotal) * 100,
-            lineRate: (fulfilledLines / commitmentLines) * 100,
-            committedQty: committedTotal,
-            fulfilledQty,
-            commitmentLines,
-            fulfilledLines
-        },
         snapshotDate: selectedSnapshot.snapshotDate,
         issues
     };
 }
 
-function calculatePlanAcceptanceWape(snapshots, month, customer) {
-    for (let i = snapshots.length - 1; i >= 0; i--) {
-        const snapshot = snapshots[i];
-        let absDiffTotal = 0;
-        let customerTotal = 0;
-        let comparedParts = 0;
-        const variances = [];
-
-        for (const row of snapshot.rows || []) {
-            if (!matchesCustomer(row, customer)) continue;
-            let custSch = null;
-            if (row.monthlySchedules && Object.prototype.hasOwnProperty.call(row.monthlySchedules, month)) {
-                custSch = Number(row.monthlySchedules[month]);
-            }
-            let compSch = null;
-            if (row.monthlyCommitments && Object.prototype.hasOwnProperty.call(row.monthlyCommitments, month)) {
-                compSch = Number(row.monthlyCommitments[month]);
-            }
-
-            if (custSch === null || compSch === null || !Number.isFinite(custSch) || !Number.isFinite(compSch)) {
-                continue;
-            }
-
-            const diff = Math.abs(compSch - custSch);
-            absDiffTotal += diff;
-            customerTotal += custSch;
-            comparedParts += 1;
-
-            if (diff > 0) {
-                variances.push({
-                    customer: normalizeCustomer(row.customer, row.customerName2, row.customerCode).name || "Unknown",
-                    partNo: row.partNo || "-",
-                    customerSchedule: custSch,
-                    companyCommitment: compSch,
-                    variance: compSch - custSch,
-                    absDiff: diff
-                });
-            }
-        }
-
-        if (customerTotal > 0 && comparedParts > 0) {
-            variances.sort((a, b) => b.absDiff - a.absDiff);
-            return {
-                value: (absDiffTotal / customerTotal) * 100,
-                status: "available",
-                source: snapshot.source,
-                customerTotal,
-                absDiffTotal,
-                comparedParts,
-                variances: variances.slice(0, 30)
-            };
-        }
-    }
-
-    return {
-        value: null,
-        status: "no_data_for_month",
-        comparedParts: 0,
-        variances: []
-    };
-}
-
-function calculateDispatchExecutionWape(snapshots, month, customer) {
-    for (let i = snapshots.length - 1; i >= 0; i--) {
-        const snapshot = snapshots[i];
-        let absDiffTotal = 0;
-        let scheduleTotal = 0;
-        let comparedParts = 0;
-        const partVariances = [];
-
-        for (const row of snapshot.rows || []) {
-            if (!matchesCustomer(row, customer)) continue;
-            let sch = null;
-            if (row.monthlySchedules && Object.prototype.hasOwnProperty.call(row.monthlySchedules, month)) {
-                sch = Number(row.monthlySchedules[month]);
-            } else if (normalizeMonth(row.deliveryMonth) === month) {
-                sch = Number(row.customerSchedule ?? row.currentMonth ?? 0);
-            }
-            if (sch === null || !Number.isFinite(sch)) continue;
-
-            let disp = 0;
-            if (row.monthlyDispatches && Object.prototype.hasOwnProperty.call(row.monthlyDispatches, month)) {
-                disp = Number(row.monthlyDispatches[month]) || 0;
-            } else if (normalizeMonth(row.deliveryMonth) === month) {
-                disp = Number(row.actualDispatch || 0);
-            }
-
-            const diff = Math.abs(disp - sch);
-            absDiffTotal += diff;
-            scheduleTotal += sch;
-            comparedParts += 1;
-
-            if (sch > 0 || disp > 0) {
-                partVariances.push({
-                    customer: normalizeCustomer(row.customer, row.customerName2, row.customerCode).name || "Unknown",
-                    partNo: row.partNo || "-",
-                    schedule: sch,
-                    dispatch: disp,
-                    variance: disp - sch,
-                    absDiff: diff
-                });
-            }
-        }
-
-        if (scheduleTotal > 0) {
-            partVariances.sort((a, b) => b.absDiff - a.absDiff);
-            return {
-                value: (absDiffTotal / scheduleTotal) * 100,
-                status: "available",
-                source: snapshot.source,
-                scheduleTotal,
-                absDiffTotal,
-                comparedParts,
-                partVariances: partVariances.slice(0, 30)
-            };
-        }
-    }
-
-    return {
-        value: null,
-        status: "no_data_for_month",
-        comparedParts: 0,
-        partVariances: []
-    };
-}
-
 function calculateScheduleAnalytics(snapshots, month, customer, now = new Date(), comparison = {}) {
     if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) {
-        return {
-            month,
-            customer: customer || "ALL",
-            demandRevisionWape: { value: null, status: "invalid_month" },
-            planAcceptanceWape: { value: null, status: "invalid_month" },
-            dispatchExecutionWape: { value: null, status: "invalid_month" },
-            onTime: { quantityRate: null, lineRate: null, status: "invalid_month" }
-        };
+        return { month, customer: customer || "ALL", demandRevisionWape: { value: null, status: "invalid_month" }, onTime: { quantityRate: null, lineRate: null, status: "invalid_month" } };
     }
 
     return {
         month,
         customer: customer || "ALL",
         demandRevisionWape: calculateDemandRevisionWape(snapshots, month, customer, comparison),
-        planAcceptanceWape: calculatePlanAcceptanceWape(snapshots, month, customer),
-        dispatchExecutionWape: calculateDispatchExecutionWape(snapshots, month, customer),
         onTime: calculateOnTime(snapshots, month, customer, now)
     };
 }
 
-function getDistinctCustomers(snapshots) {
-    const customers = new Set();
-    for (const snapshot of snapshots) {
-        for (const row of snapshot.rows || []) {
-            const norm = normalizeCustomer(row.customer, row.customerName2, row.customerCode);
-            if (norm.name) customers.add(norm.name);
-        }
-    }
-    return Array.from(customers).sort();
+function formatNumberEn(value) {
+    if (value === null || value === undefined || isNaN(value)) return "0";
+    return new Intl.NumberFormat("en-IN").format(Math.round(Number(value)));
 }
 
-function getAllDeliveryMonths(snapshots, customer) {
-    const months = new Set();
-    for (const snapshot of snapshots) {
-        for (const row of snapshot.rows || []) {
-            if (!matchesCustomer(row, customer)) continue;
-            if (row.monthlySchedules) {
-                for (const key of Object.keys(row.monthlySchedules)) {
-                    const norm = normalizeMonth(key);
-                    if (norm) months.add(norm);
-                }
-            }
-            const dm = normalizeMonth(row.deliveryMonth);
-            if (dm) months.add(dm);
-            const rm = normalizeMonth(row.referenceMonth);
-            if (rm) months.add(rm);
-        }
+function formatMonthLabel(monthKey) {
+    if (!monthKey || monthKey === "ALL") return "All Months";
+    const [year, month] = monthKey.split("-");
+    const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const idx = parseInt(month, 10) - 1;
+    if (idx >= 0 && idx < 12) {
+        return `${monthNames[idx]}'${year.slice(2)}`;
     }
-    return Array.from(months).sort();
+    return monthKey;
 }
 
-function calculateConsistencyForSeries(demands) {
-    const valid = demands.filter(d => typeof d === "number" && Number.isFinite(d));
-    if (!valid.length) {
+function getDemandTotal(row, month) {
+    if (month && month !== "ALL") {
+        return getDemandForMonth(row, month);
+    }
+    if (row.monthlySchedules && typeof row.monthlySchedules === "object") {
+        const values = Object.values(row.monthlySchedules).map(Number).filter(Number.isFinite);
+        if (values.length > 0) {
+            return values.reduce((sum, v) => sum + v, 0);
+        }
+    }
+    const fallback = Number(row.currentCustomerSchedule ?? row.currentMonth ?? row.customerSchedule);
+    return Number.isFinite(fallback) ? fallback : 0;
+}
+
+function compareDifferentSheets(snapshots, options = {}) {
+    if (!snapshots || snapshots.length === 0) {
         return {
-            mean: 0,
-            stdDev: 0,
-            cv: 0,
-            score: null,
-            rating: "No Data",
-            status: "no_data",
-            min: 0,
-            max: 0,
-            total: 0
+            status: "no_snapshots",
+            message: "No schedule sheets have been uploaded yet. Upload Excel files to begin comparison.",
+            summary: null,
+            rows: []
         };
     }
 
-    const total = valid.reduce((sum, v) => sum + v, 0);
-    const mean = total / valid.length;
-    if (mean === 0) {
+    const { baseSnapshotId, compareSnapshotId, month = "ALL", customer = "ALL" } = options;
+
+    let baseSnap = baseSnapshotId ? snapshots.find(s => s.snapshotId === baseSnapshotId) : null;
+    let compareSnap = compareSnapshotId ? snapshots.find(s => s.snapshotId === compareSnapshotId) : null;
+
+    if (!baseSnap && snapshots.length >= 2) {
+        baseSnap = snapshots[snapshots.length - 2];
+    } else if (!baseSnap && snapshots.length === 1) {
+        baseSnap = snapshots[0];
+    }
+
+    if (!compareSnap && snapshots.length >= 2) {
+        compareSnap = snapshots[snapshots.length - 1];
+    } else if (!compareSnap && snapshots.length === 1) {
+        compareSnap = snapshots[0];
+    }
+
+    if (!baseSnap || !compareSnap) {
         return {
-            mean: 0,
-            stdDev: 0,
-            cv: 0,
-            score: null,
-            rating: "Nil Activity",
-            status: "neutral",
-            min: 0,
-            max: 0,
-            total: 0
+            status: "needs_selection",
+            message: "Please select two Excel sheets to compare.",
+            summary: null,
+            rows: []
         };
     }
 
-    const variance = valid.reduce((sum, v) => sum + Math.pow(v - mean, 2), 0) / valid.length;
-    const stdDev = Math.sqrt(variance);
-    const cv = stdDev / mean;
+    const baseRows = (baseSnap.rows || []).filter(r => matchesCustomer(r, customer));
+    const compareRows = (compareSnap.rows || []).filter(r => matchesCustomer(r, customer));
 
-    let score;
-    let rating;
-    let status;
+    const baseEntityMap = new Map();
+    for (const row of baseRows) {
+        const qty = getDemandTotal(row, month);
+        if (qty === null) continue;
+        const key = getEntityKey(row);
+        if (key === "||||") continue;
+        const existing = baseEntityMap.get(key);
+        if (!existing || isHigherVersion(row.version, existing.row.version)) {
+            baseEntityMap.set(key, { row, demand: qty });
+        }
+    }
 
-    if (cv <= 0.15) {
-        score = Math.round(100 - (cv / 0.15) * 10);
-        rating = "Highly Consistent";
-        status = "consistent";
-    } else if (cv <= 0.35) {
-        score = Math.round(90 - ((cv - 0.15) / 0.20) * 20);
-        rating = "Moderately Consistent";
-        status = "moderate";
-    } else if (cv <= 0.60) {
-        score = Math.round(70 - ((cv - 0.35) / 0.25) * 30);
-        rating = "Volatile";
-        status = "volatile";
+    const compareEntityMap = new Map();
+    for (const row of compareRows) {
+        const qty = getDemandTotal(row, month);
+        if (qty === null) continue;
+        const key = getEntityKey(row);
+        if (key === "||||") continue;
+        const existing = compareEntityMap.get(key);
+        if (!existing || isHigherVersion(row.version, existing.row.version)) {
+            compareEntityMap.set(key, { row, demand: qty });
+        }
+    }
+
+    const allKeys = new Set([...baseEntityMap.keys(), ...compareEntityMap.keys()]);
+    let baseTotal = 0;
+    let compareTotal = 0;
+    let absoluteDiffSum = 0;
+    let partsIncreased = 0;
+    let partsDecreased = 0;
+    let partsUnchanged = 0;
+    let partsAdded = 0;
+    let partsRemoved = 0;
+
+    const rows = [];
+    for (const key of allKeys) {
+        const b = baseEntityMap.get(key);
+        const c = compareEntityMap.get(key);
+        const baseQty = b ? b.demand : 0;
+        const compareQty = c ? c.demand : 0;
+        const row = c?.row || b?.row;
+
+        baseTotal += baseQty;
+        compareTotal += compareQty;
+        const change = compareQty - baseQty;
+        absoluteDiffSum += Math.abs(change);
+
+        let status = "unchanged";
+        if (!b && c && compareQty > 0) {
+            status = "added";
+            partsAdded++;
+        } else if (b && (!c || compareQty === 0) && baseQty > 0) {
+            status = "removed";
+            partsRemoved++;
+        } else if (change > 0) {
+            status = "increased";
+            partsIncreased++;
+        } else if (change < 0) {
+            status = "decreased";
+            partsDecreased++;
+        } else {
+            partsUnchanged++;
+        }
+
+        const percentChange = baseQty > 0
+            ? ((compareQty - baseQty) / baseQty) * 100
+            : (compareQty > 0 ? 100 : 0);
+
+        rows.push({
+            customer: row.customer || row.customerName2 || row.customerCode || "Unknown",
+            customerCode: row.customerCode || "",
+            partNo: row.partNo || "-",
+            customerPartNo: row.customerPartNo || "-",
+            productDescription: row.productDescription || "-",
+            line: row.line || "-",
+            model: row.model || "-",
+            baseQty,
+            compareQty,
+            change,
+            percentChange,
+            status
+        });
+    }
+
+    rows.sort((a, b) => Math.abs(b.change) - Math.abs(a.change));
+
+    const netChange = compareTotal - baseTotal;
+    const percentChange = baseTotal > 0 ? (netChange / baseTotal) * 100 : (compareTotal > 0 ? 100 : 0);
+    const wape = compareTotal > 0 ? (absoluteDiffSum / compareTotal) * 100 : (baseTotal > 0 ? (absoluteDiffSum / baseTotal) * 100 : 0);
+
+    let stabilityLabel = "High Stability (Minimal Changes)";
+    let stabilityClass = "stable";
+    if (wape > 25) {
+        stabilityLabel = "High Volatility (Major Plan Shifts)";
+        stabilityClass = "high-volatility";
+    } else if (wape > 10) {
+        stabilityLabel = "Moderate Volatility";
+        stabilityClass = "moderate";
+    } else if (wape > 2) {
+        stabilityLabel = "Low Volatility (Minor Adjustments)";
+        stabilityClass = "low-volatility";
+    }
+
+    const monthDisplay = formatMonthLabel(month);
+    let takeaway = "";
+    if (allKeys.size === 0) {
+        takeaway = `No schedule demand found for ${monthDisplay} and selected customer.`;
+    } else if (netChange === 0 && partsIncreased === 0 && partsDecreased === 0 && partsAdded === 0 && partsRemoved === 0) {
+        takeaway = `Both sheets have identical demand (${formatNumberEn(compareTotal)} units) for ${monthDisplay}. No quantity changes were detected across all ${allKeys.size} parts.`;
     } else {
-        score = Math.max(10, Math.round(40 - Math.min(cv - 0.60, 0.60) * 50));
-        rating = "Erratic / Unpredictable";
-        status = "erratic";
-    }
-
-    return {
-        mean: Math.round(mean * 100) / 100,
-        stdDev: Math.round(stdDev * 100) / 100,
-        cv: Math.round(cv * 1000) / 1000,
-        score,
-        rating,
-        status,
-        min: Math.min(...valid),
-        max: Math.max(...valid),
-        total
-    };
-}
-
-function calculateHorizonDrift(snapshots, customer) {
-    const sorted = [...snapshots].sort((a, b) =>
-        getSnapshotOrderKey(a).localeCompare(getSnapshotOrderKey(b))
-    );
-
-    const allMonths = getAllDeliveryMonths(sorted, customer);
-    const horizonRecords = [];
-
-    for (const month of allMonths) {
-        const monthSnapshots = [];
-        for (const snapshot of sorted) {
-            const entities = getDemandByEntity(snapshot, month, customer);
-            if (!entities.size) continue;
-            let total = 0;
-            for (const item of entities.values()) {
-                total += item.demand || 0;
-            }
-            monthSnapshots.push({
-                snapshotId: snapshot.snapshotId,
-                snapshotDate: snapshot.snapshotDate,
-                capturedAt: snapshot.capturedAt,
-                source: snapshot.source,
-                demand: total
-            });
-        }
-
-        if (monthSnapshots.length >= 2) {
-            const tentative = monthSnapshots[0].demand;
-            const firm = monthSnapshots[monthSnapshots.length - 1].demand;
-            const change = firm - tentative;
-            const driftPct = tentative > 0 ? (change / tentative) * 100 : 0;
-            const stages = monthSnapshots.map(s => ({
-                snapshotDate: s.snapshotDate,
-                source: s.source,
-                demand: s.demand
-            }));
-
-            horizonRecords.push({
-                deliveryMonth: month,
-                earliestForecastDate: monthSnapshots[0].snapshotDate,
-                earliestDemand: tentative,
-                latestDemand: firm,
-                stages,
-                change,
-                driftPct: Math.round(driftPct * 100) / 100
-            });
-        }
-    }
-
-    if (!horizonRecords.length) {
-        const singleFileRecords = [];
-        let totalForecast = 0;
-        let totalDelivered = 0;
-
-        for (const month of allMonths) {
-            let custDemand = 0;
-            let dispatchDemand = 0;
-            let planDemand = 0;
-
-            for (const snapshot of sorted) {
-                for (const row of snapshot.rows || []) {
-                    if (!matchesCustomer(row, customer)) continue;
-                    if (row.monthlySchedules && Object.prototype.hasOwnProperty.call(row.monthlySchedules, month)) {
-                        custDemand += Number(row.monthlySchedules[month]) || 0;
-                    } else if (normalizeMonth(row.deliveryMonth) === month) {
-                        custDemand += Number(row.customerSchedule ?? row.currentMonth ?? 0) || 0;
-                    }
-
-                    if (row.monthlyDispatches && Object.prototype.hasOwnProperty.call(row.monthlyDispatches, month)) {
-                        dispatchDemand += Number(row.monthlyDispatches[month]) || 0;
-                    } else if (normalizeMonth(row.deliveryMonth) === month) {
-                        dispatchDemand += Number(row.actualDispatch || 0) || 0;
-                    }
-
-                    if (row.monthlyCommitments && Object.prototype.hasOwnProperty.call(row.monthlyCommitments, month)) {
-                        planDemand += Number(row.monthlyCommitments[month]) || 0;
-                    } else if (normalizeMonth(row.deliveryMonth) === month) {
-                        planDemand += Number(row.companyCommitment || 0) || 0;
-                    }
-                }
-            }
-
-            if (custDemand > 0 || dispatchDemand > 0 || planDemand > 0) {
-                const targetFulfillment = dispatchDemand > 0 ? dispatchDemand : planDemand;
-                const change = targetFulfillment - custDemand;
-                const driftPct = custDemand > 0 ? (change / custDemand) * 100 : 0;
-                totalForecast += custDemand;
-                totalDelivered += targetFulfillment;
-
-                singleFileRecords.push({
-                    deliveryMonth: month,
-                    earliestForecastDate: "Customer Schedule",
-                    earliestDemand: custDemand,
-                    latestDemand: targetFulfillment,
-                    stages: [
-                        { snapshotDate: "Customer Schedule", source: "Customer Schedule", demand: custDemand },
-                        { snapshotDate: dispatchDemand > 0 ? "Actual Dispatch" : "Committed Plan", source: dispatchDemand > 0 ? "Actual Dispatch" : "Committed Plan", demand: targetFulfillment }
-                    ],
-                    change,
-                    driftPct: Math.round(driftPct * 100) / 100,
-                    basis: dispatchDemand > 0 ? "Actual Dispatch" : "Committed Plan"
-                });
-            }
-        }
-
-        if (singleFileRecords.length > 0 && totalForecast > 0 && totalDelivered > 0) {
-            const overallChange = totalDelivered - totalForecast;
-            const biasPct = (overallChange / totalForecast) * 100;
-            const avgDrift = singleFileRecords.reduce((sum, r) => sum + r.driftPct, 0) / singleFileRecords.length;
-
-            let biasType = "Balanced Forecast";
-            if (biasPct < -10) {
-                biasType = `Over-Forecasting (${Math.round(biasPct)}% Demand Inflation)`;
-            } else if (biasPct > 10) {
-                biasType = `Under-Forecasting (+${Math.round(biasPct)}% Demand Surges)`;
-            }
-
-            return {
-                status: "available",
-                averageDriftPct: Math.round(avgDrift * 100) / 100,
-                biasPct: Math.round(biasPct * 100) / 100,
-                biasType,
-                evaluatedMonthsCount: singleFileRecords.length,
-                basis: "forecast_vs_actual",
-                records: singleFileRecords
-            };
-        }
-
-        return {
-            status: sorted.length < 2 ? "needs_multiple_snapshots" : "no_overlapping_months",
-            averageDriftPct: null,
-            biasPct: null,
-            biasType: "Insufficient Historical Overlap",
-            records: []
-        };
-    }
-
-    const totalTentative = horizonRecords.reduce((sum, r) => sum + r.earliestDemand, 0);
-    const totalFirm = horizonRecords.reduce((sum, r) => sum + r.latestDemand, 0);
-    const totalChange = totalFirm - totalTentative;
-    const biasPct = totalTentative > 0 ? (totalChange / totalTentative) * 100 : 0;
-    const avgDrift = horizonRecords.reduce((sum, r) => sum + r.driftPct, 0) / horizonRecords.length;
-
-    let biasType = "Balanced Forecast";
-    if (biasPct < -10) {
-        biasType = "Over-Forecasting (Tentative Demand Erosion)";
-    } else if (biasPct > 10) {
-        biasType = "Under-Forecasting (Late Demand Surges)";
+        const changeSign = netChange >= 0 ? "+" : "";
+        takeaway = `Overall demand shifted from ${formatNumberEn(baseTotal)} to ${formatNumberEn(compareTotal)} units (${changeSign}${formatNumberEn(netChange)} units or ${changeSign}${percentChange.toFixed(1)}%) for ${monthDisplay}. Out of ${allKeys.size} parts compared: ${partsIncreased} increased, ${partsDecreased} decreased${partsAdded ? `, ${partsAdded} newly introduced` : ""}${partsRemoved ? `, ${partsRemoved} removed` : ""}.`;
     }
 
     return {
         status: "available",
-        averageDriftPct: Math.round(avgDrift * 100) / 100,
-        biasPct: Math.round(biasPct * 100) / 100,
-        biasType,
-        evaluatedMonthsCount: horizonRecords.length,
-        records: horizonRecords
+        baseSheet: {
+            snapshotId: baseSnap.snapshotId,
+            source: baseSnap.source || "Sheet A",
+            date: baseSnap.snapshotDate || baseSnap.capturedAt?.slice(0, 10) || ""
+        },
+        compareSheet: {
+            snapshotId: compareSnap.snapshotId,
+            source: compareSnap.source || "Sheet B",
+            date: compareSnap.snapshotDate || compareSnap.capturedAt?.slice(0, 10) || ""
+        },
+        month,
+        monthLabel: monthDisplay,
+        customer,
+        summary: {
+            baseTotal,
+            compareTotal,
+            netChange,
+            percentChange,
+            wape,
+            stabilityLabel,
+            stabilityClass,
+            partsTotal: allKeys.size,
+            partsIncreased,
+            partsDecreased,
+            partsUnchanged,
+            partsAdded,
+            partsRemoved,
+            takeaway
+        },
+        rows
     };
 }
 
-function calculatePartConsistency(snapshots, customer) {
-    const sorted = [...snapshots].sort((a, b) =>
-        getSnapshotOrderKey(a).localeCompare(getSnapshotOrderKey(b))
-    );
-    const latestSnapshot = sorted[sorted.length - 1];
-    if (!latestSnapshot) return [];
+function getMetricValue(row, metric, month) {
+    if (metric === "schedule") {
+        if (month && month !== "ALL") {
+            const val = getDemandForMonth(row, month);
+            if (val !== null) return val;
+        } else if (row.monthlySchedules && typeof row.monthlySchedules === "object") {
+            const values = Object.values(row.monthlySchedules).map(Number).filter(Number.isFinite);
+            if (values.length > 0) return values.reduce((sum, v) => sum + v, 0);
+        }
+        return Number(row.currentCustomerSchedule ?? row.currentMonth ?? row.customerSchedule ?? 0);
+    }
+    if (metric === "commitment") {
+        if (month && month !== "ALL") {
+            const val = getMonthQuantity(row, "monthlyCommitments", month, "companyCommitment", "companyCommitmentProvided");
+            if (val !== null) return val;
+        } else if (row.monthlyCommitments && typeof row.monthlyCommitments === "object") {
+            const values = Object.values(row.monthlyCommitments).map(Number).filter(Number.isFinite);
+            if (values.length > 0) return values.reduce((sum, v) => sum + v, 0);
+        }
+        return Number(row.companyCommitment ?? 0);
+    }
+    if (metric === "dispatch") {
+        if (month && month !== "ALL") {
+            const val = getMonthQuantity(row, "monthlyDispatches", month, "actualDispatch", "actualDispatchProvided");
+            if (val !== null) return val;
+        } else if (row.monthlyDispatches && typeof row.monthlyDispatches === "object") {
+            const values = Object.values(row.monthlyDispatches).map(Number).filter(Number.isFinite);
+            if (values.length > 0) return values.reduce((sum, v) => sum + v, 0);
+        }
+        return Number(row.actualDispatch ?? 0);
+    }
+    if (metric === "production") {
+        return Number(row.actualProductionQty ?? 0);
+    }
+    if (metric === "balance") {
+        return Number(row.balance ?? 0);
+    }
+    if (metric === "originalSchedule") {
+        return Number(row.originalCustomerSchedule ?? row.scheduleReceivedQty ?? row.currentCustomerSchedule ?? 0);
+    }
+    return 0;
+}
 
-    const partsMap = new Map();
-    for (const row of latestSnapshot.rows || []) {
-        if (!matchesCustomer(row, customer)) continue;
-        const partNo = row.partNo || "UNKNOWN";
-        const existing = partsMap.get(partNo) || {
-            partNo,
-            productDescription: row.productDescription || "",
-            application: row.application || "",
-            monthlyDemands: {}
+const METRIC_LABELS = {
+    schedule: "Customer Schedule",
+    commitment: "Company Commitment",
+    dispatch: "Actual Dispatch",
+    production: "Actual Production",
+    balance: "Backlog / Balance",
+    originalSchedule: "Original Schedule"
+};
+
+function compareWithinSameSheet(snapshots, options = {}) {
+    if (!snapshots || snapshots.length === 0) {
+        return {
+            status: "no_snapshots",
+            message: "No schedule sheets have been uploaded yet. Upload an Excel file to begin.",
+            summary: null,
+            rows: []
         };
-
-        if (row.monthlySchedules) {
-            for (const [m, q] of Object.entries(row.monthlySchedules)) {
-                const norm = normalizeMonth(m);
-                if (norm) {
-                    existing.monthlyDemands[norm] = (existing.monthlyDemands[norm] || 0) + Number(q || 0);
-                }
-            }
-        }
-        const dm = normalizeMonth(row.deliveryMonth);
-        if (dm && !existing.monthlyDemands[dm]) {
-            existing.monthlyDemands[dm] = Number(row.currentCustomerSchedule ?? row.currentMonth ?? row.customerSchedule ?? 0);
-        }
-        partsMap.set(partNo, existing);
     }
 
-    const partResults = [];
-    for (const [, item] of partsMap.entries()) {
-        const demandValues = Object.values(item.monthlyDemands);
-        const stats = calculateConsistencyForSeries(demandValues);
-        partResults.push({
-            partNo: item.partNo,
-            productDescription: item.productDescription,
-            application: item.application,
-            monthsCount: demandValues.length,
-            totalDemand: stats.total,
-            meanDemand: stats.mean,
-            stdDev: stats.stdDev,
-            cv: stats.cv,
-            score: stats.score,
-            rating: stats.rating,
-            status: stats.status,
-            minDemand: stats.min,
-            maxDemand: stats.max
+    const {
+        snapshotId,
+        mode = "months",
+        monthA,
+        monthB,
+        metricA = "commitment",
+        metricB = "dispatch",
+        month = "ALL",
+        customer = "ALL"
+    } = options;
+
+    let targetSnap = snapshotId ? snapshots.find(s => s.snapshotId === snapshotId) : null;
+    if (!targetSnap) {
+        targetSnap = snapshots[snapshots.length - 1];
+    }
+
+    if (!targetSnap) {
+        return {
+            status: "snapshot_not_found",
+            message: "Selected Excel sheet was not found.",
+            summary: null,
+            rows: []
+        };
+    }
+
+    const matchedRows = (targetSnap.rows || []).filter(r => matchesCustomer(r, customer));
+
+    if (mode === "months") {
+        const allMonthsInSheet = new Set();
+        matchedRows.forEach(r => {
+            if (r.monthlySchedules) {
+                Object.keys(r.monthlySchedules).forEach(m => allMonthsInSheet.add(m));
+            }
+            const dm = normalizeMonth(r.deliveryMonth);
+            if (dm) allMonthsInSheet.add(dm);
+        });
+        const sortedMonths = Array.from(allMonthsInSheet).sort();
+
+        const targetMonthA = monthA || (sortedMonths.length > 0 ? sortedMonths[0] : "");
+        const targetMonthB = monthB || (sortedMonths.length > 1 ? sortedMonths[1] : targetMonthA);
+
+        if (!targetMonthA) {
+            return {
+                status: "no_months_in_sheet",
+                message: "No monthly schedule columns found in this sheet.",
+                summary: null,
+                rows: []
+            };
+        }
+
+        const byEntity = new Map();
+        for (const row of matchedRows) {
+            const key = getEntityKey(row);
+            if (key === "||||") continue;
+            const existing = byEntity.get(key);
+            if (!existing || isHigherVersion(row.version, existing.version)) {
+                byEntity.set(key, row);
+            }
+        }
+
+        let totalA = 0;
+        let totalB = 0;
+        let diffAbsSum = 0;
+        let partsIncreased = 0;
+        let partsDecreased = 0;
+        let partsUnchanged = 0;
+
+        const rows = [];
+        for (const row of byEntity.values()) {
+            const qtyA = Number(getDemandForMonth(row, targetMonthA) || 0);
+            const qtyB = Number(getDemandForMonth(row, targetMonthB) || 0);
+            if (qtyA === 0 && qtyB === 0) continue;
+
+            totalA += qtyA;
+            totalB += qtyB;
+            const change = qtyB - qtyA;
+            diffAbsSum += Math.abs(change);
+
+            let status = "unchanged";
+            if (qtyA === 0 && qtyB > 0) {
+                status = "added";
+                partsIncreased++;
+            } else if (qtyA > 0 && qtyB === 0) {
+                status = "removed";
+                partsDecreased++;
+            } else if (change > 0) {
+                status = "increased";
+                partsIncreased++;
+            } else if (change < 0) {
+                status = "decreased";
+                partsDecreased++;
+            } else {
+                partsUnchanged++;
+            }
+
+            const percentChange = qtyA > 0 ? (change / qtyA) * 100 : (qtyB > 0 ? 100 : 0);
+
+            rows.push({
+                customer: row.customer || row.customerName2 || row.customerCode || "Unknown",
+                customerCode: row.customerCode || "",
+                partNo: row.partNo || "-",
+                customerPartNo: row.customerPartNo || "-",
+                productDescription: row.productDescription || "-",
+                line: row.line || "-",
+                model: row.model || "-",
+                qtyA,
+                qtyB,
+                change,
+                percentChange,
+                status
+            });
+        }
+
+        rows.sort((a, b) => Math.abs(b.change) - Math.abs(a.change));
+        const netChange = totalB - totalA;
+        const percentChange = totalA > 0 ? (netChange / totalA) * 100 : (totalB > 0 ? 100 : 0);
+        const labelA = formatMonthLabel(targetMonthA);
+        const labelB = formatMonthLabel(targetMonthB);
+        const changeSign = netChange >= 0 ? "+" : "";
+
+        const takeaway = rows.length === 0
+            ? `No records found comparing ${labelA} and ${labelB}.`
+            : `Across the production timeline, demand shifts from ${formatNumberEn(totalA)} in ${labelA} to ${formatNumberEn(totalB)} in ${labelB} (${changeSign}${formatNumberEn(netChange)} units or ${changeSign}${percentChange.toFixed(1)}%). Of ${rows.length} parts: ${partsIncreased} ramp up, ${partsDecreased} ramp down, and ${partsUnchanged} stay flat.`;
+
+        return {
+            status: "available",
+            mode: "months",
+            sheet: {
+                snapshotId: targetSnap.snapshotId,
+                source: targetSnap.source || "Current Sheet",
+                date: targetSnap.snapshotDate || targetSnap.capturedAt?.slice(0, 10) || ""
+            },
+            monthA: targetMonthA,
+            monthB: targetMonthB,
+            labelA,
+            labelB,
+            summary: {
+                totalA,
+                totalB,
+                netChange,
+                percentChange,
+                partsTotal: rows.length,
+                partsIncreased,
+                partsDecreased,
+                partsUnchanged,
+                takeaway
+            },
+            rows
+        };
+    } else {
+        const labelA = METRIC_LABELS[metricA] || metricA;
+        const labelB = METRIC_LABELS[metricB] || metricB;
+
+        const byEntity = new Map();
+        for (const row of matchedRows) {
+            const key = getEntityKey(row);
+            if (key === "||||") continue;
+            const existing = byEntity.get(key);
+            if (!existing || isHigherVersion(row.version, existing.version)) {
+                byEntity.set(key, row);
+            }
+        }
+
+        let totalA = 0;
+        let totalB = 0;
+        let partsFulfilled = 0;
+        let partsShortfall = 0;
+        let partsSurplus = 0;
+        let shortfallQty = 0;
+        let surplusQty = 0;
+
+        const rows = [];
+        for (const row of byEntity.values()) {
+            const qtyA = getMetricValue(row, metricA, month);
+            const qtyB = getMetricValue(row, metricB, month);
+            if (qtyA === 0 && qtyB === 0) continue;
+
+            totalA += qtyA;
+            totalB += qtyB;
+            const diff = qtyB - qtyA;
+
+            let status = "fulfilled";
+            if (diff < 0) {
+                status = "shortfall";
+                partsShortfall++;
+                shortfallQty += Math.abs(diff);
+            } else if (diff > 0) {
+                status = "surplus";
+                partsSurplus++;
+                surplusQty += diff;
+            } else {
+                partsFulfilled++;
+            }
+
+            const fulfillmentRate = qtyA > 0 ? (qtyB / qtyA) * 100 : (qtyB >= 0 ? 100 : 0);
+
+            rows.push({
+                customer: row.customer || row.customerName2 || row.customerCode || "Unknown",
+                customerCode: row.customerCode || "",
+                partNo: row.partNo || "-",
+                customerPartNo: row.customerPartNo || "-",
+                productDescription: row.productDescription || "-",
+                line: row.line || "-",
+                model: row.model || "-",
+                qtyA,
+                qtyB,
+                diff,
+                fulfillmentRate,
+                status
+            });
+        }
+
+        rows.sort((a, b) => a.diff - b.diff);
+        const netDiff = totalB - totalA;
+        const fulfillmentRate = totalA > 0 ? (totalB / totalA) * 100 : (totalB >= 0 ? 100 : 0);
+        const monthLabel = formatMonthLabel(month);
+
+        let takeaway = "";
+        if (rows.length === 0) {
+            takeaway = `No data found comparing ${labelA} vs ${labelB} for ${monthLabel}.`;
+        } else if (partsShortfall === 0) {
+            takeaway = `100% fulfilled! ${labelB} completely met or exceeded ${labelA} (${formatNumberEn(totalB)} of ${formatNumberEn(totalA)} units) across all ${rows.length} parts for ${monthLabel}.`;
+        } else {
+            takeaway = `${labelB} achieved ${fulfillmentRate.toFixed(1)}% of ${labelA} (${formatNumberEn(totalB)} of ${formatNumberEn(totalA)} units) for ${monthLabel}. ${partsShortfall} parts experienced shortfalls totaling ${formatNumberEn(shortfallQty)} units.`;
+        }
+
+        return {
+            status: "available",
+            mode: "metrics",
+            sheet: {
+                snapshotId: targetSnap.snapshotId,
+                source: targetSnap.source || "Current Sheet",
+                date: targetSnap.snapshotDate || targetSnap.capturedAt?.slice(0, 10) || ""
+            },
+            metricA,
+            metricB,
+            labelA,
+            labelB,
+            month,
+            monthLabel,
+            summary: {
+                totalA,
+                totalB,
+                netDiff,
+                fulfillmentRate,
+                partsTotal: rows.length,
+                partsFulfilled,
+                partsShortfall,
+                partsSurplus,
+                shortfallQty,
+                surplusQty,
+                takeaway
+            },
+            rows
+        };
+    }
+}
+
+function getSnapshotComparisonMeta(snapshots, snapshotId) {
+    if (!snapshots || snapshots.length === 0) {
+        return {
+            snapshots: [],
+            availableMonths: [],
+            availableCustomers: [],
+            availableMetrics: [
+                { id: "schedule", label: "Customer Schedule" },
+                { id: "commitment", label: "Company Commitment" },
+                { id: "dispatch", label: "Actual Dispatch" },
+                { id: "production", label: "Actual Production" },
+                { id: "originalSchedule", label: "Original Customer Schedule" }
+            ]
+        };
+    }
+
+    const snapshotList = snapshots.map((s, idx) => {
+        const months = new Set();
+        (s.rows || []).forEach(r => {
+            if (r.monthlySchedules) {
+                Object.keys(r.monthlySchedules).forEach(m => months.add(m));
+            }
+            const dm = normalizeMonth(r.deliveryMonth);
+            if (dm) months.add(dm);
+        });
+        return {
+            snapshotId: s.snapshotId || `snap-${idx}`,
+            source: s.source || `Excel upload #${idx + 1}`,
+            date: s.snapshotDate || s.capturedAt?.slice(0, 10) || "",
+            rowCount: (s.rows || []).length,
+            months: Array.from(months).sort()
+        };
+    });
+
+    let targetSnap = snapshotId ? snapshots.find(s => s.snapshotId === snapshotId) : snapshots[snapshots.length - 1];
+    if (!targetSnap && snapshots.length > 0) targetSnap = snapshots[snapshots.length - 1];
+
+    const months = new Set();
+    const customers = new Set();
+    if (targetSnap) {
+        (targetSnap.rows || []).forEach(r => {
+            if (r.monthlySchedules) {
+                Object.keys(r.monthlySchedules).forEach(m => months.add(m));
+            }
+            const dm = normalizeMonth(r.deliveryMonth);
+            if (dm) months.add(dm);
+            const cust = r.customerGroup || r.customer || r.customerCode;
+            if (cust) customers.add(cust);
         });
     }
 
-    partResults.sort((a, b) => b.totalDemand - a.totalDemand);
-    return partResults;
-}
-
-function generateConsistencyInsight(consistency, horizon) {
-    if (consistency.status === "no_data") {
-        return "Upload customer schedules to generate demand consistency insights.";
-    }
-
-    const parts = [];
-    if (consistency.status === "consistent") {
-        parts.push(`Customer displays high ordering stability with low monthly volatility (CV: ${consistency.cv.toFixed(3)}, Score: ${consistency.score}/100). Production can be level-scheduled with low safety stock.`);
-    } else if (consistency.status === "moderate") {
-        parts.push(`Customer has moderate monthly volatility (CV: ${consistency.cv.toFixed(3)}, Score: ${consistency.score}/100), typical for regular manufacturing operations.`);
-    } else if (consistency.status === "volatile") {
-        parts.push(`Customer exhibits volatile ordering patterns (CV: ${consistency.cv.toFixed(3)}, Score: ${consistency.score}/100) with wide monthly swings. Active capacity buffering recommended.`);
-    } else {
-        parts.push(`Customer exhibits highly erratic/sporadic ordering (CV: ${consistency.cv.toFixed(3)}, Score: ${consistency.score}/100). Recommend strict firm-order frozen zones.`);
-    }
-
-    if (horizon && horizon.status === "available") {
-        if (horizon.biasPct < -10) {
-            parts.push(`Significant tentative forecast erosion detected: firm demand averages ${Math.abs(horizon.biasPct).toFixed(1)}% lower than tentative forecasts. Discount tentative projections when committing long-lead material.`);
-        } else if (horizon.biasPct > 10) {
-            parts.push(`Late demand spikes detected: firm demand averages +${horizon.biasPct.toFixed(1)}% higher than tentative projections. Maintain buffer stock to avoid stockouts.`);
-        } else {
-            parts.push(`Tentative forecasts track closely with firm execution (net drift: ${horizon.biasPct > 0 ? "+" : ""}${horizon.biasPct.toFixed(1)}%).`);
-        }
-    } else {
-        parts.push("Additional dated schedule uploads are needed to evaluate multi-month horizon drift.");
-    }
-
-    return parts.join(" ");
-}
-
-function calculateCustomerConsistency(snapshots, customer = "ALL") {
-    if (!snapshots || !snapshots.length) {
-        return {
-            customer: customer || "ALL",
-            status: "no_data",
-            message: "No snapshots available for analysis.",
-            consistency: calculateConsistencyForSeries([]),
-            horizonDrift: { status: "no_data", records: [] },
-            parts: [],
-            customerBreakdown: [],
-            insight: "Upload customer schedule spreadsheets to begin consistency tracking."
-        };
-    }
-
-    const distinctCustomers = getDistinctCustomers(snapshots);
-    const sorted = [...snapshots].sort((a, b) =>
-        getSnapshotOrderKey(a).localeCompare(getSnapshotOrderKey(b))
-    );
-    const latestSnapshot = sorted[sorted.length - 1];
-
-    const allMonths = getAllDeliveryMonths(sorted, customer);
-    const monthlyTotals = [];
-    for (const m of allMonths) {
-        const entities = getDemandByEntity(latestSnapshot, m, customer);
-        let monthSum = 0;
-        for (const item of entities.values()) {
-            monthSum += item.demand || 0;
-        }
-        if (entities.size > 0) {
-            monthlyTotals.push(monthSum);
-        }
-    }
-
-    const consistency = calculateConsistencyForSeries(monthlyTotals);
-    const horizonDrift = calculateHorizonDrift(snapshots, customer);
-    const parts = calculatePartConsistency(snapshots, customer);
-    const insight = generateConsistencyInsight(consistency, horizonDrift);
-
-    const customerBreakdown = distinctCustomers.map(custName => {
-        const custMonths = getAllDeliveryMonths(sorted, custName);
-        const custTotals = [];
-        for (const m of custMonths) {
-            const entities = getDemandByEntity(latestSnapshot, m, custName);
-            let s = 0;
-            for (const item of entities.values()) s += item.demand || 0;
-            if (entities.size > 0) custTotals.push(s);
-        }
-        const custConsistency = calculateConsistencyForSeries(custTotals);
-        const custHorizon = calculateHorizonDrift(snapshots, custName);
-        const hasOrders = custConsistency.total > 0;
-        return {
-            customer: custName,
-            score: hasOrders ? custConsistency.score : null,
-            rating: hasOrders ? custConsistency.rating : "Nil Activity",
-            status: hasOrders ? custConsistency.status : "neutral",
-            cv: hasOrders ? custConsistency.cv : undefined,
-            meanDemand: custConsistency.mean,
-            totalDemand: custConsistency.total,
-            biasPct: hasOrders ? custHorizon.biasPct : null,
-            biasType: hasOrders ? custHorizon.biasType : "-"
-        };
-    }).sort((a, b) => {
-        const scoreA = a.score !== null && a.score !== undefined ? a.score : -1;
-        const scoreB = b.score !== null && b.score !== undefined ? b.score : -1;
-        if (scoreB !== scoreA) return scoreB - scoreA;
-        return (b.totalDemand || 0) - (a.totalDemand || 0);
+    const allMonths = new Set();
+    const allCustomers = new Set();
+    snapshots.forEach(s => {
+        (s.rows || []).forEach(r => {
+            if (r.monthlySchedules) {
+                Object.keys(r.monthlySchedules).forEach(m => allMonths.add(m));
+            }
+            const dm = normalizeMonth(r.deliveryMonth);
+            if (dm) allMonths.add(dm);
+            const cust = r.customerGroup || r.customer || r.customerCode;
+            if (cust) allCustomers.add(cust);
+        });
     });
 
     return {
-        customer: customer || "ALL",
-        status: consistency.status,
-        consistency,
-        horizonDrift,
-        parts,
-        customerBreakdown,
-        insight,
-        monthsEvaluated: allMonths
-    };
-}
-
-function getMonthDiff(fromMonth, toMonth) {
-    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(fromMonth) || !/^\d{4}-(0[1-9]|1[0-2])$/.test(toMonth)) return null;
-    const [y1, m1] = fromMonth.split("-").map(Number);
-    const [y2, m2] = toMonth.split("-").map(Number);
-    return (y2 - y1) * 12 + (m2 - m1);
-}
-
-function calculateCustomerActivity(snapshots, targetMonth) {
-    if (!snapshots || !snapshots.length || !/^\d{4}-(0[1-9]|1[0-2])$/.test(targetMonth)) {
-        return {
-            targetMonth: targetMonth || "",
-            summary: {
-                totalCustomers: 0,
-                activeCount: 0,
-                zeroMonthCount: 0,
-                atRiskCount: 0,
-                dormantCount: 0
-            },
-            customers: []
-        };
-    }
-
-    const sorted = [...snapshots].sort((a, b) =>
-        getSnapshotOrderKey(a).localeCompare(getSnapshotOrderKey(b))
-    );
-    const latestSnapshot = sorted[sorted.length - 1];
-    const distinctCustomers = getDistinctCustomers(snapshots);
-
-    // Collect all recorded active delivery months for each customer
-    const customerMonthlyActive = new Map();
-    for (const cust of distinctCustomers) {
-        customerMonthlyActive.set(cust, new Map());
-    }
-
-    // Evaluate latest snapshot rows for the latest view of each month
-    for (const row of latestSnapshot.rows || []) {
-        const norm = normalizeCustomer(row.customer, row.customerName2, row.customerCode);
-        const cust = norm.name;
-        if (!cust || !customerMonthlyActive.has(cust)) continue;
-
-        const custMap = customerMonthlyActive.get(cust);
-        if (row.monthlySchedules) {
-            for (const [m, q] of Object.entries(row.monthlySchedules)) {
-                const norm = normalizeMonth(m);
-                if (norm) {
-                    custMap.set(norm, (custMap.get(norm) || 0) + Number(q || 0));
-                }
-            }
-        }
-        const dm = normalizeMonth(row.deliveryMonth);
-        if (dm && !custMap.has(dm)) {
-            custMap.set(dm, Number(row.currentCustomerSchedule ?? row.currentMonth ?? row.customerSchedule ?? 0));
-        }
-    }
-
-    // Also scan earlier snapshots in case an earlier snapshot recorded positive demand for an older month
-    for (const snapshot of sorted) {
-        for (const row of snapshot.rows || []) {
-            const norm = normalizeCustomer(row.customer, row.customerName2, row.customerCode);
-            const cust = norm.name;
-            if (!cust || !customerMonthlyActive.has(cust)) continue;
-            const custMap = customerMonthlyActive.get(cust);
-            if (row.monthlySchedules) {
-                for (const [m, q] of Object.entries(row.monthlySchedules)) {
-                    const norm = normalizeMonth(m);
-                    if (norm && !custMap.has(norm) && Number(q) > 0) {
-                        custMap.set(norm, Number(q));
-                    }
-                }
-            }
-            const dm = normalizeMonth(row.deliveryMonth);
-            if (dm && !custMap.has(dm)) {
-                const q = Number(row.currentCustomerSchedule ?? row.currentMonth ?? row.customerSchedule ?? 0);
-                if (q > 0) custMap.set(dm, q);
-            }
-        }
-    }
-
-    const customers = distinctCustomers.map(custName => {
-        const custMap = customerMonthlyActive.get(custName) || new Map();
-        const targetMonthDemand = custMap.get(targetMonth) || 0;
-
-        // Find all past or present months with positive demand (<= targetMonth)
-        const pastActiveMonths = [];
-        let lifetimeTotalDemand = 0;
-        let positiveMonthCount = 0;
-
-        for (const [m, demand] of custMap.entries()) {
-            if (demand > 0) {
-                lifetimeTotalDemand += demand;
-                positiveMonthCount += 1;
-                if (m <= targetMonth) {
-                    pastActiveMonths.push(m);
-                }
-            }
-        }
-        pastActiveMonths.sort();
-
-        let lastActiveMonth = null;
-        let monthsInactive = null;
-        let status = "never_ordered";
-        let statusLabel = "Nil Activity";
-        let statusSeverity = "neutral";
-
-        if (targetMonthDemand > 0) {
-            status = "active";
-            statusLabel = "Active";
-            statusSeverity = "success";
-            lastActiveMonth = targetMonth;
-            monthsInactive = 0;
-        } else if (pastActiveMonths.length > 0) {
-            lastActiveMonth = pastActiveMonths[pastActiveMonths.length - 1];
-            monthsInactive = getMonthDiff(lastActiveMonth, targetMonth);
-
-            if (monthsInactive <= 1) {
-                status = "zero_this_month";
-                statusLabel = "Zero This Month";
-                statusSeverity = "warning";
-            } else if (monthsInactive >= 2 && monthsInactive <= 3) {
-                status = "at_risk";
-                statusLabel = `At Risk (${monthsInactive}m ago)`;
-                statusSeverity = "warning";
-            } else {
-                status = "dormant";
-                statusLabel = `Dormant (${monthsInactive}m ago)`;
-                statusSeverity = "danger";
-            }
-        } else if (lifetimeTotalDemand > 0) {
-            status = "zero_this_month";
-            statusLabel = "Tentative Future Only";
-            statusSeverity = "warning";
-            monthsInactive = null;
-        } else {
-            status = "never_ordered";
-            statusLabel = "Nil Activity";
-            statusSeverity = "neutral";
-            monthsInactive = null;
-        }
-
-        const meanDemand = positiveMonthCount > 0 ? Math.round(lifetimeTotalDemand / positiveMonthCount) : 0;
-
-        return {
-            customer: custName,
-            targetMonthDemand,
-            lastActiveMonth,
-            monthsInactive,
-            status,
-            statusLabel,
-            statusSeverity,
-            lifetimeTotalDemand,
-            meanDemand
-        };
-    });
-
-    const activeCount = customers.filter(c => c.status === "active").length;
-    const zeroMonthCount = customers.filter(c => c.status === "zero_this_month").length;
-    const atRiskCount = customers.filter(c => c.status === "at_risk").length;
-    const dormantCount = customers.filter(c => c.status === "dormant" || c.status === "never_ordered").length;
-
-    return {
-        targetMonth,
-        summary: {
-            totalCustomers: customers.length,
-            activeCount,
-            zeroMonthCount,
-            atRiskCount,
-            dormantCount
-        },
-        customers
+        snapshots: snapshotList,
+        currentSnapshotId: targetSnap?.snapshotId || "",
+        availableMonths: Array.from(months).sort(),
+        availableCustomers: Array.from(customers).sort(),
+        allMonths: Array.from(allMonths).sort(),
+        allCustomers: Array.from(allCustomers).sort(),
+        availableMetrics: [
+            { id: "schedule", label: "Customer Schedule" },
+            { id: "commitment", label: "Company Commitment" },
+            { id: "dispatch", label: "Actual Dispatch" },
+            { id: "production", label: "Actual Production" },
+            { id: "originalSchedule", label: "Original Customer Schedule" }
+        ]
     };
 }
 
@@ -1283,9 +1041,7 @@ module.exports = {
     calculateDemandRevisionWape,
     calculateOnTime,
     getDemandSnapshotTimeline,
-    calculateCustomerConsistency,
-    calculateCustomerActivity,
-    getSnapshotEffectiveDate,
-    extractDateFromText
+    compareDifferentSheets,
+    compareWithinSameSheet,
+    getSnapshotComparisonMeta
 };
-

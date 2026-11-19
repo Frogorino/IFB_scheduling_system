@@ -9,19 +9,14 @@ const dbConfig = require("./dbconfig");
 const {
     calculateScheduleAnalytics,
     getDemandSnapshotTimeline,
-    calculateCustomerConsistency,
-    calculateCustomerActivity,
-    getSnapshotEffectiveDate
+    compareDifferentSheets,
+    compareWithinSameSheet,
+    getSnapshotComparisonMeta
 } = require("./schedule-analytics");
-const {
-    getScheduleRecords,
-    findBestScheduleSheet,
-    formatMonthLabel
-} = require("./excel-header");
-const { normalizeCustomer } = require("./customer-normalizer");
+const { getScheduleRecords } = require("./excel-header");
 
 const app = express();
-const PORT = Number(process.env.PORT || 3000);
+const PORT = Number(process.env.PORT || 3001);
 const uploadDir = path.join(__dirname, "../upload");
 const scheduleDataPath = path.join(__dirname, "../database/schedule-records.json");
 const scheduleSnapshotsPath = path.join(__dirname, "../database/schedule-snapshots.json");
@@ -123,61 +118,44 @@ function getHeaderIndex(headers, aliases) {
 }
 
 function getMonthKeyFromHeader(header) {
-    if (!header) return null;
-    const normalized = normalizeHeader(header);
-    if (/^(?:monthly plan|annual plan|plan|ifb|rev|revision|tentative|firm)\b/.test(normalized)) {
-        return null;
-    }
-    const match = normalized.match(/\b(january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sep|october|oct|november|nov|december|dec)\s*['\- ]?\s*(\d{2}|\d{4})\b/);
+    const match = normalizeHeader(header).match(/^([a-z]+)\s+(\d{2}|\d{4})$/);
     if (!match) return null;
 
-    const months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
-    const monthIndex = months.indexOf(match[1].slice(0, 3));
+    const monthIndex = [
+        "jan", "feb", "mar", "apr", "may", "jun",
+        "jul", "aug", "sep", "oct", "nov", "dec"
+    ].findIndex((month) => month === match[1].slice(0, 3));
     if (monthIndex === -1) return null;
 
-    const yearStr = match[2];
-    const year = yearStr.length === 2 ? Number(`20${yearStr}`) : Number(yearStr);
+    const year = match[2].length === 2 ? Number(`20${match[2]}`) : Number(match[2]);
     return `${year}-${String(monthIndex + 1).padStart(2, "0")}`;
 }
 
 function getMonthMetricFromHeader(header) {
-    if (!header) return null;
     const normalized = normalizeHeader(header);
-    if (/^(?:monthly plan|annual plan|plan|ifb|rev|revision|tentative|firm)\b/.test(normalized)) {
-        return null;
-    }
-    const match = normalized.match(/\b(january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sep|october|oct|november|nov|december|dec)\s*['\- ]?\s*(\d{2}|\d{4})\b/);
+    const match = normalized.match(/\b(january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sep|october|oct|november|nov|december|dec)\s+(\d{2}|\d{4})\b/);
     if (!match) return null;
 
-    const months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
-    const monthIndex = months.indexOf(match[1].slice(0, 3));
-    if (monthIndex === -1) return null;
-
-    const yearStr = match[2];
-    const year = yearStr.length === 2 ? Number(`20${yearStr}`) : Number(yearStr);
+    const monthIndex = [
+        "jan", "feb", "mar", "apr", "may", "jun",
+        "jul", "aug", "sep", "oct", "nov", "dec"
+    ].indexOf(match[1].slice(0, 3));
+    const year = match[2].length === 2 ? Number(`20${match[2]}`) : Number(match[2]);
     const monthKey = `${year}-${String(monthIndex + 1).padStart(2, "0")}`;
-    const remainder = (normalized.slice(0, match.index) + " " + normalized.slice(match.index + match[0].length)).trim().replace(/\s+/g, " ");
+    const prefix = normalized.slice(0, match.index).trim();
+    const suffix = normalized.slice(match.index + match[0].length).trim();
+    const metricLabel = `${prefix} ${suffix}`.trim();
 
-    if (/\b(?:dispatch|dispatches|delivery|delivered|actual dispatch|billed|invoiced)\b/.test(remainder)) {
-        if (/\bdate\b/.test(remainder)) {
-            return { monthKey, metric: "dispatchDate" };
-        }
-        return { monthKey, metric: "dispatch" };
-    }
-
-    if (/\b(?:customer|actual customer|client)\s*(?:sche?d?u[le]+|demand|order|po)\b/.test(remainder)) {
-        return { monthKey, metric: "customerSchedule" };
-    }
-
-    if (/\b(?:company commitment|commitment|firm|internal schedule|plant schedule)\b/.test(remainder)) {
+    if (/^(?:company )?commitment(?: qty| quantity)?$/.test(metricLabel)) {
         return { monthKey, metric: "commitment" };
     }
-
-    if (/\b(?:sche?d?u[le]+|plan|demand)\b/.test(remainder) || remainder === "") {
-        return { monthKey, metric: "schedule" };
+    if (/^(?:(?:actual )?dispatch)(?: qty| quantity)?$/.test(metricLabel)) {
+        return { monthKey, metric: "dispatch" };
     }
-
-    return { monthKey, metric: "schedule" };
+    if (/^(?:(?:actual )?dispatch) date$/.test(metricLabel)) {
+        return { monthKey, metric: "dispatchDate" };
+    }
+    return null;
 }
 
 function mapScheduleRow(record) {
@@ -190,18 +168,10 @@ function mapScheduleRow(record) {
     const customerIndex = getHeaderIndex(keys, [
         "customer",
         "customer name",
-        "customer_name",
-        "soldtoparty",
-        "sold to party",
-        "soldtoparty name",
-        "party",
-        "party name",
-        "client",
-        "account",
-        "buyer"
+        "customer_name"
     ]);
     const customerName2Index = getHeaderIndex(keys, ["customer name2", "customer name 2", "customer_name2"]);
-    const customerCodeIndex = getHeaderIndex(keys, ["customer code", "customer id", "cust code", "cust id", "soldtoparty"]);
+    const customerCodeIndex = getHeaderIndex(keys, ["customer code", "customer id", "cust code", "cust id"]);
     const customerPartNoIndex = getHeaderIndex(keys, ["customer part no", "customer part no.", "customer part number", "cust part no"]);
     const helperIndex = getHeaderIndex(keys, ["helper"]);
     const lineIndex = getHeaderIndex(keys, ["line", "prod line", "production line"]);
@@ -214,17 +184,7 @@ function mapScheduleRow(record) {
         "part number no",
         "part",
         "part_no",
-        "part no number",
-        "part#",
-        "part #",
-        "material",
-        "material no",
-        "material number",
-        "item",
-        "item code",
-        "fg part",
-        "fg code",
-        "fg part no"
+        "part no number"
     ]);
     const applicationIndex = getHeaderIndex(keys, ["application", "product application"]);
     const descriptionIndex = getHeaderIndex(keys, ["description", "product description", "part description"]);
@@ -350,86 +310,48 @@ function mapScheduleRow(record) {
     const monthlyDispatchDates = {};
 
     keys.forEach((key, index) => {
-        const val = values[index];
-        if (!hasCellValue(val)) return;
-
-        const metricInfo = getMonthMetricFromHeader(key);
-        if (metricInfo) {
-            const num = toNumber(val);
-            if (metricInfo.metric === "customerSchedule") {
-                monthlySchedules[metricInfo.monthKey] = num;
-            } else if (metricInfo.metric === "commitment") {
-                monthlyCommitments[metricInfo.monthKey] = num;
-            } else if (metricInfo.metric === "dispatch") {
-                monthlyDispatches[metricInfo.monthKey] = num;
-            } else if (metricInfo.metric === "dispatchDate") {
-                monthlyDispatchDates[metricInfo.monthKey] = String(val || "").trim();
-            } else if (metricInfo.metric === "schedule") {
-                if (monthlySchedules[metricInfo.monthKey] !== undefined) {
-                    monthlyCommitments[metricInfo.monthKey] = num;
-                } else {
-                    monthlySchedules[metricInfo.monthKey] = num;
-                }
-            }
+        const monthKey = getMonthKeyFromHeader(key);
+        if (monthKey && hasCellValue(values[index])) monthlySchedules[monthKey] = toNumber(values[index]);
+        const monthMetric = getMonthMetricFromHeader(key);
+        if (monthMetric?.metric === "commitment" && hasCellValue(values[index])) {
+            monthlyCommitments[monthMetric.monthKey] = toNumber(values[index]);
+        } else if (monthMetric?.metric === "dispatch" && hasCellValue(values[index])) {
+            monthlyDispatches[monthMetric.monthKey] = toNumber(values[index]);
+        } else if (monthMetric?.metric === "dispatchDate" && hasCellValue(values[index])) {
+            monthlyDispatchDates[monthMetric.monthKey] = String(values[index] || "").trim();
         }
     });
-
-    const sortedMonths = Object.keys(monthlySchedules).sort();
 
     const customer = customerIndex !== -1 ? values[customerIndex] : "";
     const customerName2 = customerName2Index !== -1 ? values[customerName2Index] : "";
     const customerCode = customerCodeIndex !== -1 ? values[customerCodeIndex] : customer;
     const partNo = partIndex !== -1 ? values[partIndex] : "";
     const version = versionIndex !== -1 ? values[versionIndex] : "Current";
-
-    let deliveryMonth = deliveryMonthIndex !== -1 ? String(values[deliveryMonthIndex] || "").trim() : "";
-    if (!deliveryMonth && sortedMonths.length > 0) {
-        deliveryMonth = formatMonthLabel(sortedMonths[0]);
-    }
+    const previousMonth = previousMonthIndex !== -1 ? toNumber(values[previousMonthIndex]) : 0;
+    const currentMonth = scheduleIndex !== -1 ? toNumber(values[scheduleIndex]) : 0;
+    const comingMonth = comingMonthIndex !== -1 ? toNumber(values[comingMonthIndex]) : 0;
+    const companyCommitmentProvided = commitmentIndex !== -1 && hasCellValue(values[commitmentIndex]);
+    const actualDispatchProvided = dispatchIndex !== -1 && hasCellValue(values[dispatchIndex]);
+    const companyCommitment = commitmentIndex !== -1 ? toNumber(values[commitmentIndex]) : currentMonth;
+    const actualDispatch = dispatchIndex !== -1 ? toNumber(values[dispatchIndex]) : 0;
+    const deliveryMonth = deliveryMonthIndex !== -1 ? String(values[deliveryMonthIndex] || "").trim() : "";
     const deliveryMonthKey = getMonthKeyFromHeader(deliveryMonth);
-
-    let previousMonth = previousMonthIndex !== -1 ? toNumber(values[previousMonthIndex]) : 0;
-    let currentMonth = scheduleIndex !== -1 ? toNumber(values[scheduleIndex]) : 0;
-    let comingMonth = comingMonthIndex !== -1 ? toNumber(values[comingMonthIndex]) : 0;
-
-    if (scheduleIndex === -1 && sortedMonths.length > 0) {
-        const monthsWithDispatches = Object.keys(monthlyDispatches);
-        const primaryMonth = monthsWithDispatches.length > 0
-            ? sortedMonths[sortedMonths.length - 1]
-            : sortedMonths[0];
-        currentMonth = monthlySchedules[primaryMonth] ?? 0;
-        const pIdx = sortedMonths.indexOf(primaryMonth);
-        if (pIdx > 0) previousMonth = monthlySchedules[sortedMonths[pIdx - 1]] ?? 0;
-        if (pIdx < sortedMonths.length - 1) comingMonth = monthlySchedules[sortedMonths[pIdx + 1]] ?? 0;
-    }
-
     if (deliveryMonthKey && scheduleIndex !== -1 && hasCellValue(values[scheduleIndex])
         && !Object.prototype.hasOwnProperty.call(monthlySchedules, deliveryMonthKey)) {
         monthlySchedules[deliveryMonthKey] = currentMonth;
     }
-
-    const companyCommitmentProvided = commitmentIndex !== -1 && hasCellValue(values[commitmentIndex]);
-    const actualDispatchProvided = dispatchIndex !== -1 && hasCellValue(values[dispatchIndex]);
-    const companyCommitment = commitmentIndex !== -1
-        ? toNumber(values[commitmentIndex])
-        : (sortedMonths.length > 0 && monthlyCommitments[sortedMonths[0]] !== undefined ? monthlyCommitments[sortedMonths[0]] : currentMonth);
-    const actualDispatch = dispatchIndex !== -1
-        ? toNumber(values[dispatchIndex])
-        : (sortedMonths.length > 0 && monthlyDispatches[sortedMonths[0]] !== undefined ? monthlyDispatches[sortedMonths[0]] : 0);
-
+    
     const backlogValue = balanceIndex !== -1 ? values[balanceIndex] : null;
     const balance = backlogValue !== null && String(backlogValue).trim() !== ""
         ? toNumber(backlogValue)
-        : (companyCommitment - actualDispatch);
-
-    const normCustomer = normalizeCustomer(customer, customerName2, customerCode);
+        : null;
 
     return {
         serialNo: serialNoIndex !== -1 ? String(values[serialNoIndex] || "").trim() : "",
-        customer: normCustomer.name,
-        customerGroup: normCustomer.group,
-        customerName2: normCustomer.legalName || String(customerName2 || "").trim(),
-        customerCode: normCustomer.code || String(customerCode || "").trim(),
+        customer: String(customerName2 || customer || "").trim(),
+        customerGroup: String(customer || "").trim(),
+        customerName2: String(customerName2 || "").trim(),
+        customerCode: String(customerCode || "").trim(),
         customerPartNo: customerPartNoIndex !== -1 ? String(values[customerPartNoIndex] || "").trim() : "",
         helper: helperIndex !== -1 ? String(values[helperIndex] || "").trim() : "",
         line: lineIndex !== -1 ? String(values[lineIndex] || "").trim() : "",
@@ -545,36 +467,152 @@ function loadScheduleSnapshots() {
     return savedSnapshots;
 }
 
+function parseMonth(val) {
+    if (!val) return null;
+    const num = Number(val);
+    if (!isNaN(num) && num > 40000 && num < 60000) {
+        const d = XLSX.SSF.parse_date_code(num);
+        return d ? `${d.y}-${String(d.m).padStart(2, "0")}` : null;
+    }
+    const str = String(val).trim().toLowerCase();
+    const m = str.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s'/-]*(\d{2}|\d{4})\b/i);
+    if (m) {
+        const months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+        const mIdx = months.indexOf(m[1].slice(0, 3).toLowerCase());
+        const yr = m[2].length === 2 ? Number(`20${m[2]}`) : Number(m[2]);
+        return `${yr}-${String(mIdx + 1).padStart(2, "0")}`;
+    }
+    return null;
+}
+
 function parseScheduleWorkbook(workbook) {
-    const { sheetName, sheet } = findBestScheduleSheet(workbook, XLSX);
-    if (!sheet) {
-        return [];
-    }
-    const rawRows = getScheduleRecords(sheet, XLSX);
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+    const rawRows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
 
-    if (!rawRows.length) {
-        return [];
+    let headerRowIdx = -1;
+    for (let i = 0; i < Math.min(15, rawRows.length); i++) {
+        const rowStr = rawRows[i].map(c => String(c).toLowerCase()).join(" ");
+        if (rowStr.includes("customer") && (rowStr.includes("part") || rowStr.includes("part no"))) {
+            headerRowIdx = i;
+            break;
+        }
     }
 
-    const rows = rawRows
-        .map((row) => mapScheduleRow(row))
-        .filter((row) => {
-            const cust = String(row.customer || "").trim();
-            const part = String(row.partNo || "").trim();
-            if (!cust || !part) return false;
-            if (/^(?:total|grand total|product line|summary|totals)\b/i.test(cust)) return false;
-            if (/^(?:oct'\d+|schedule qty|schedule value)/i.test(part)) return false;
-            const hasMonthly = Object.keys(row.monthlySchedules || {}).length > 0;
-            const hasLegacySchedule = row.currentMonth !== 0 || row.previousMonth !== 0 || row.comingMonth !== 0 || row.actualDispatch !== 0;
-            return hasMonthly || hasLegacySchedule;
+    if (headerRowIdx === -1) {
+        const legacyRows = getScheduleRecords(workbook.Sheets[sheetName], XLSX);
+        return legacyRows.map(mapScheduleRow).filter(r => r.customer || r.partNo);
+    }
+
+    const headers = rawRows[headerRowIdx];
+    const prevRow = headerRowIdx > 0 ? rawRows[headerRowIdx - 1] : [];
+
+    const colMappings = [];
+    let activeMonth = null;
+    for (let c = 0; c < headers.length; c++) {
+        const h = headers[c];
+        const norm = String(h || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+        const mFromH = parseMonth(h);
+        const mFromPrev = parseMonth(prevRow[c]);
+        if (mFromPrev) activeMonth = mFromPrev;
+        else if (mFromH) activeMonth = mFromH;
+
+        let field = null;
+        if (/^(sl\s*no|serial|s\s*no)/.test(norm)) field = "serialNo";
+        else if (norm === "customer" || norm === "customer name") field = "customer";
+        else if (norm.includes("customer code")) field = "customerCode";
+        else if (norm.includes("customer name2") || norm.includes("customer name 2")) field = "customerName2";
+        else if (norm.includes("customer part")) field = "customerPartNo";
+        else if (/^part\s*no/.test(norm) || norm === "part" || norm === "part no.") field = "partNo";
+        else if (norm === "helper") field = "helper";
+        else if (norm === "line") field = "line";
+        else if (norm === "model") field = "model";
+        else if (norm.includes("oem")) field = "oem";
+        else if (norm.includes("desc") || norm.includes("description")) field = "productDescription";
+        else if (norm.includes("dispatch") || norm.includes("actual dispatch")) {
+            field = { type: "dispatch", month: activeMonth };
+        } else if (norm.includes("actual customer") || norm.includes("customer scheule") || norm.includes("customer schedule")) {
+            field = { type: "schedule", month: activeMonth };
+        } else if (norm.includes("commitment") || (mFromH && norm.includes("schedule"))) {
+            field = { type: "commitment", month: activeMonth };
+        } else if (mFromH) {
+            field = { type: "demand", month: mFromH };
+        }
+
+        colMappings.push(field);
+    }
+
+    const rows = [];
+    for (let r = headerRowIdx + 1; r < rawRows.length; r++) {
+        const raw = rawRows[r];
+        if (!raw || raw.every(c => c === "" || c === null || c === undefined)) continue;
+
+        const monthlySchedules = {};
+        const monthlyCommitments = {};
+        const monthlyDispatches = {};
+        const obj = {
+            serialNo: "", customer: "", customerGroup: "", customerName2: "", customerCode: "",
+            customerPartNo: "", helper: "", line: "", model: "", oem: "", partNo: "",
+            application: "", productDescription: "", version: "Current", deliveryMonth: "",
+            scheduleReceivedDate: "", scheduleStartMonth: "", scheduleEndMonth: "",
+            scheduleReceivedQty: null, originalCustomerSchedule: null, currentCustomerSchedule: null,
+            actualProductionQty: 0, dispatchDate: "", varianceReason: "",
+            previousMonth: 0, currentMonth: 0, comingMonth: 0, customerSchedule: 0,
+            companyCommitment: 0, companyCommitmentProvided: false,
+            actualDispatch: 0, actualDispatchProvided: false, actualDispatchMonthAligned: true,
+            balance: null
+        };
+
+        colMappings.forEach((mapping, c) => {
+            const val = raw[c];
+            if (typeof mapping === "string") {
+                obj[mapping] = String(val || "").trim();
+            } else if (mapping && typeof mapping === "object" && mapping.month) {
+                const num = Number(String(val || "").replace(/[^0-9.-]/g, "")) || 0;
+                if (mapping.type === "schedule") monthlySchedules[mapping.month] = num;
+                else if (mapping.type === "commitment") monthlyCommitments[mapping.month] = num;
+                else if (mapping.type === "dispatch") monthlyDispatches[mapping.month] = num;
+                else if (mapping.type === "demand") {
+                    monthlySchedules[mapping.month] = num;
+                    monthlyCommitments[mapping.month] = num;
+                }
+            }
         });
 
-    rows.sheetName = sheetName;
+        if (!obj.customer && !obj.partNo) continue;
+        obj.customerGroup = obj.customer;
+
+        const months = Object.keys(monthlySchedules).sort();
+        if (months.length > 0) {
+            obj.deliveryMonth = months[0];
+            obj.currentMonth = monthlySchedules[months[0]] || 0;
+            obj.customerSchedule = obj.currentMonth;
+            if (months.length > 1) obj.comingMonth = monthlySchedules[months[1]] || 0;
+            if (monthlyCommitments[months[0]] !== undefined) {
+                obj.companyCommitment = monthlyCommitments[months[0]];
+                obj.companyCommitmentProvided = true;
+            } else {
+                obj.companyCommitment = obj.currentMonth;
+            }
+            if (monthlyDispatches[months[0]] !== undefined) {
+                obj.actualDispatch = monthlyDispatches[months[0]];
+                obj.actualDispatchProvided = true;
+                obj.balance = obj.currentMonth - obj.actualDispatch;
+            }
+        }
+
+        obj.monthlySchedules = monthlySchedules;
+        obj.monthlyCommitments = monthlyCommitments;
+        obj.monthlyDispatches = monthlyDispatches;
+
+        rows.push(obj);
+    }
     return rows;
 }
 
 function getDashboardSummary(rows) {
-    const customerList = Array.from(new Set(rows.map((row) => row.customer).filter(Boolean))).sort((a, b) => a.localeCompare(b));
+    const customerList = Array.from(new Set(rows.map((row) => row.customer).filter(Boolean)));
     const parts = new Set(rows.map((row) => row.partNo).filter(Boolean)).size;
     const totalPreviousMonth = rows.reduce((sum, row) => sum + (row.previousMonth || 0), 0);
     const totalCurrentMonth = rows.reduce((sum, row) => sum + (row.currentMonth || row.customerSchedule || 0), 0);
@@ -794,7 +832,7 @@ app.delete("/api/schedule-row/:index", (req, res) => {
 });
 
 app.get("/master-data", (req, res) => {
-    const customersByName = new Map();
+    const customersByCode = new Map();
     const catalog = {};
 
     const allKnownRows = [
@@ -802,17 +840,9 @@ app.get("/master-data", (req, res) => {
         ...scheduleSnapshots.flatMap(snapshot => snapshot.rows || [])
     ];
     for (const row of allKnownRows) {
-        const norm = normalizeCustomer(row.customer, row.customerName2, row.customerCode);
-        const name = norm.name || String(row.customer || "").trim();
-        const code = norm.code || row.customerCode || makeCustomerCode(name);
-        if (name && !customersByName.has(name)) {
-            customersByName.set(name, {
-                name,
-                code,
-                group: norm.group,
-                legalName: norm.legalName
-            });
-        }
+        const name = row.customer || row.customerCode;
+        const code = row.customerCode || makeCustomerCode(name);
+        if (name && !customersByCode.has(code)) customersByCode.set(code, { name, code });
         if (row.partNo) {
             const application = row.application || "Imported";
             if (!catalog[application]) catalog[application] = [];
@@ -825,12 +855,8 @@ app.get("/master-data", (req, res) => {
         }
     }
 
-    const sortedCustomers = Array.from(customersByName.values()).sort((a, b) =>
-        a.name.localeCompare(b.name)
-    );
-
     res.json({
-        customers: sortedCustomers,
+        customers: Array.from(customersByCode.values()),
         catalog,
         varianceReasons: []
     });
@@ -872,18 +898,213 @@ app.get("/analytics/snapshots", (req, res) => {
     });
 });
 
-app.get("/analytics/customer-consistency", (req, res) => {
-    const customer = String(req.query.customer || "ALL").trim();
-    return res.json(calculateCustomerConsistency(scheduleSnapshots, customer));
+app.get("/analytics/compare-different-sheets", (req, res) => {
+    const { baseSnapshotId, compareSnapshotId, month, customer } = req.query;
+    const result = compareDifferentSheets(scheduleSnapshots, {
+        baseSnapshotId: baseSnapshotId ? String(baseSnapshotId) : undefined,
+        compareSnapshotId: compareSnapshotId ? String(compareSnapshotId) : undefined,
+        month: month ? String(month) : "ALL",
+        customer: customer ? String(customer) : "ALL"
+    });
+    return res.json(result);
 });
 
-app.get("/analytics/customer-activity", (req, res) => {
-    const month = String(req.query.month || "").trim();
-    if (month && !/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) {
-        return res.status(400).json({ message: "A valid delivery month is required (YYYY-MM)." });
-    }
-    const targetMonth = month || new Date().toISOString().slice(0, 7);
-    return res.json(calculateCustomerActivity(scheduleSnapshots, targetMonth));
+app.get("/analytics/compare-within-sheet", (req, res) => {
+    const { snapshotId, mode, monthA, monthB, metricA, metricB, month, customer } = req.query;
+    const result = compareWithinSameSheet(scheduleSnapshots, {
+        snapshotId: snapshotId ? String(snapshotId) : undefined,
+        mode: mode ? String(mode) : "months",
+        monthA: monthA ? String(monthA) : undefined,
+        monthB: monthB ? String(monthB) : undefined,
+        metricA: metricA ? String(metricA) : "commitment",
+        metricB: metricB ? String(metricB) : "dispatch",
+        month: month ? String(month) : "ALL",
+        customer: customer ? String(customer) : "ALL"
+    });
+    return res.json(result);
+});
+
+app.get("/analytics/comparison-meta", (req, res) => {
+    const { snapshotId } = req.query;
+    return res.json(getSnapshotComparisonMeta(scheduleSnapshots, snapshotId ? String(snapshotId) : undefined));
+});
+
+app.post("/api/load-sample-demo", (req, res) => {
+    const demoSnapshots = [
+        {
+            snapshotId: "demo-rev1-2026-10-01",
+            snapshotDate: "2026-10-01",
+            capturedAt: "2026-10-01T09:00:00.000Z",
+            source: "Motor_Monthly_Plan_Oct26_Rev-01.xlsx",
+            rows: [
+                {
+                    serialNo: "1", customer: "Whirlpool India", customerGroup: "Whirlpool India", customerCode: "CUST-WPL",
+                    customerName2: "Whirlpool Pune Plant", partNo: "MTR-101-50W", customerPartNo: "WPL-7701",
+                    helper: "H-01", line: "Line-A", model: "Semi-Auto WM", oem: "OEM-W",
+                    productDescription: "Wash Motor 50W Standard Stator", deliveryMonth: "Oct-26", version: "Rev-01",
+                    previousMonth: 950, currentMonth: 1200, comingMonth: 1300,
+                    companyCommitment: 1200, companyCommitmentProvided: true,
+                    actualDispatch: 1150, actualDispatchProvided: true, actualDispatchMonthAligned: true,
+                    dispatchDate: "2026-10-28", actualProductionQty: 1180, balance: 50,
+                    monthlySchedules: { "2026-10": 1200, "2026-11": 1300, "2026-12": 1100 },
+                    monthlyCommitments: { "2026-10": 1200, "2026-11": 1250, "2026-12": 1100 },
+                    monthlyDispatches: { "2026-10": 1150 }
+                },
+                {
+                    serialNo: "2", customer: "Whirlpool India", customerGroup: "Whirlpool India", customerCode: "CUST-WPL",
+                    customerName2: "Whirlpool Pune Plant", partNo: "MTR-102-Spin", customerPartNo: "WPL-7702",
+                    helper: "H-01", line: "Line-A", model: "Semi-Auto WM", oem: "OEM-W",
+                    productDescription: "Spin Motor 40W High RPM", deliveryMonth: "Oct-26", version: "Rev-01",
+                    previousMonth: 800, currentMonth: 900, comingMonth: 950,
+                    companyCommitment: 900, companyCommitmentProvided: true,
+                    actualDispatch: 900, actualDispatchProvided: true, actualDispatchMonthAligned: true,
+                    dispatchDate: "2026-10-25", actualProductionQty: 920, balance: 0,
+                    monthlySchedules: { "2026-10": 900, "2026-11": 950, "2026-12": 900 },
+                    monthlyCommitments: { "2026-10": 900, "2026-11": 950, "2026-12": 900 },
+                    monthlyDispatches: { "2026-10": 900 }
+                },
+                {
+                    serialNo: "3", customer: "Bosch Home", customerGroup: "Bosch Home", customerCode: "CUST-BSH",
+                    customerName2: "BSH Chennai", partNo: "MTR-201-BLDC", customerPartNo: "BSH-B300",
+                    helper: "H-02", line: "Line-B", model: "Front Load WM", oem: "OEM-B",
+                    productDescription: "BLDC Inverter Direct Drive Motor", deliveryMonth: "Oct-26", version: "Rev-01",
+                    previousMonth: 1500, currentMonth: 1600, comingMonth: 1800,
+                    companyCommitment: 1500, companyCommitmentProvided: true,
+                    actualDispatch: 1420, actualDispatchProvided: true, actualDispatchMonthAligned: true,
+                    dispatchDate: "2026-10-30", actualProductionQty: 1450, balance: 80,
+                    monthlySchedules: { "2026-10": 1600, "2026-11": 1800, "2026-12": 2000 },
+                    monthlyCommitments: { "2026-10": 1500, "2026-11": 1700, "2026-12": 1900 },
+                    monthlyDispatches: { "2026-10": 1420 }
+                },
+                {
+                    serialNo: "4", customer: "Godrej Appliances", customerGroup: "Godrej Appliances", customerCode: "CUST-GDJ",
+                    customerName2: "Godrej Shirwal Plant", partNo: "MTR-301-70W", customerPartNo: "GDJ-M50",
+                    helper: "H-03", line: "Line-C", model: "Top Load WM", oem: "OEM-G",
+                    productDescription: "Induction Motor 70W Top Load", deliveryMonth: "Oct-26", version: "Rev-01",
+                    previousMonth: 700, currentMonth: 850, comingMonth: 850,
+                    companyCommitment: 850, companyCommitmentProvided: true,
+                    actualDispatch: 850, actualDispatchProvided: true, actualDispatchMonthAligned: true,
+                    dispatchDate: "2026-10-22", actualProductionQty: 870, balance: 0,
+                    monthlySchedules: { "2026-10": 850, "2026-11": 850, "2026-12": 800 },
+                    monthlyCommitments: { "2026-10": 850, "2026-11": 850, "2026-12": 800 },
+                    monthlyDispatches: { "2026-10": 850 }
+                },
+                {
+                    serialNo: "5", customer: "Samsung India", customerGroup: "Samsung India", customerCode: "CUST-SAM",
+                    customerName2: "Samsung Noida", partNo: "MTR-401-DD", customerPartNo: "SAM-DD99",
+                    helper: "H-04", line: "Line-B", model: "EcoBubble WM", oem: "OEM-S",
+                    productDescription: "Digital Inverter Motor 85W", deliveryMonth: "Oct-26", version: "Rev-01",
+                    previousMonth: 600, currentMonth: 750, comingMonth: 800,
+                    companyCommitment: 750, companyCommitmentProvided: true,
+                    actualDispatch: 700, actualDispatchProvided: true, actualDispatchMonthAligned: true,
+                    dispatchDate: "2026-10-29", actualProductionQty: 720, balance: 50,
+                    monthlySchedules: { "2026-10": 750, "2026-11": 800, "2026-12": 850 },
+                    monthlyCommitments: { "2026-10": 750, "2026-11": 800, "2026-12": 850 },
+                    monthlyDispatches: { "2026-10": 700 }
+                }
+            ]
+        },
+        {
+            snapshotId: "demo-rev2-2026-10-10",
+            snapshotDate: "2026-10-10",
+            capturedAt: "2026-10-10T14:30:00.000Z",
+            source: "Motor_Monthly_Plan_Oct26_Rev-02.xlsx",
+            rows: [
+                {
+                    serialNo: "1", customer: "Whirlpool India", customerGroup: "Whirlpool India", customerCode: "CUST-WPL",
+                    customerName2: "Whirlpool Pune Plant", partNo: "MTR-101-50W", customerPartNo: "WPL-7701",
+                    helper: "H-01", line: "Line-A", model: "Semi-Auto WM", oem: "OEM-W",
+                    productDescription: "Wash Motor 50W Standard Stator", deliveryMonth: "Oct-26", version: "Rev-02",
+                    previousMonth: 950, currentMonth: 1400, comingMonth: 1500, // +200 revision
+                    companyCommitment: 1350, companyCommitmentProvided: true,
+                    actualDispatch: 1320, actualDispatchProvided: true, actualDispatchMonthAligned: true,
+                    dispatchDate: "2026-10-28", actualProductionQty: 1350, balance: 30,
+                    monthlySchedules: { "2026-10": 1400, "2026-11": 1500, "2026-12": 1300 },
+                    monthlyCommitments: { "2026-10": 1350, "2026-11": 1450, "2026-12": 1300 },
+                    monthlyDispatches: { "2026-10": 1320 }
+                },
+                {
+                    serialNo: "2", customer: "Whirlpool India", customerGroup: "Whirlpool India", customerCode: "CUST-WPL",
+                    customerName2: "Whirlpool Pune Plant", partNo: "MTR-102-Spin", customerPartNo: "WPL-7702",
+                    helper: "H-01", line: "Line-A", model: "Semi-Auto WM", oem: "OEM-W",
+                    productDescription: "Spin Motor 40W High RPM", deliveryMonth: "Oct-26", version: "Rev-02",
+                    previousMonth: 800, currentMonth: 900, comingMonth: 950, // unchanged
+                    companyCommitment: 900, companyCommitmentProvided: true,
+                    actualDispatch: 900, actualDispatchProvided: true, actualDispatchMonthAligned: true,
+                    dispatchDate: "2026-10-25", actualProductionQty: 920, balance: 0,
+                    monthlySchedules: { "2026-10": 900, "2026-11": 950, "2026-12": 900 },
+                    monthlyCommitments: { "2026-10": 900, "2026-11": 950, "2026-12": 900 },
+                    monthlyDispatches: { "2026-10": 900 }
+                },
+                {
+                    serialNo: "3", customer: "Bosch Home", customerGroup: "Bosch Home", customerCode: "CUST-BSH",
+                    customerName2: "BSH Chennai", partNo: "MTR-201-BLDC", customerPartNo: "BSH-B300",
+                    helper: "H-02", line: "Line-B", model: "Front Load WM", oem: "OEM-B",
+                    productDescription: "BLDC Inverter Direct Drive Motor", deliveryMonth: "Oct-26", version: "Rev-02",
+                    previousMonth: 1500, currentMonth: 1450, comingMonth: 1650, // -150 revision
+                    companyCommitment: 1450, companyCommitmentProvided: true,
+                    actualDispatch: 1420, actualDispatchProvided: true, actualDispatchMonthAligned: true,
+                    dispatchDate: "2026-10-30", actualProductionQty: 1450, balance: 30,
+                    monthlySchedules: { "2026-10": 1450, "2026-11": 1650, "2026-12": 1850 },
+                    monthlyCommitments: { "2026-10": 1450, "2026-11": 1650, "2026-12": 1850 },
+                    monthlyDispatches: { "2026-10": 1420 }
+                },
+                {
+                    serialNo: "4", customer: "Godrej Appliances", customerGroup: "Godrej Appliances", customerCode: "CUST-GDJ",
+                    customerName2: "Godrej Shirwal Plant", partNo: "MTR-301-70W", customerPartNo: "GDJ-M50",
+                    helper: "H-03", line: "Line-C", model: "Top Load WM", oem: "OEM-G",
+                    productDescription: "Induction Motor 70W Top Load", deliveryMonth: "Oct-26", version: "Rev-02",
+                    previousMonth: 700, currentMonth: 850, comingMonth: 850,
+                    companyCommitment: 850, companyCommitmentProvided: true,
+                    actualDispatch: 850, actualDispatchProvided: true, actualDispatchMonthAligned: true,
+                    dispatchDate: "2026-10-22", actualProductionQty: 870, balance: 0,
+                    monthlySchedules: { "2026-10": 850, "2026-11": 850, "2026-12": 800 },
+                    monthlyCommitments: { "2026-10": 850, "2026-11": 850, "2026-12": 800 },
+                    monthlyDispatches: { "2026-10": 850 }
+                },
+                {
+                    serialNo: "5", customer: "Samsung India", customerGroup: "Samsung India", customerCode: "CUST-SAM",
+                    customerName2: "Samsung Noida", partNo: "MTR-401-DD", customerPartNo: "SAM-DD99",
+                    helper: "H-04", line: "Line-B", model: "EcoBubble WM", oem: "OEM-S",
+                    productDescription: "Digital Inverter Motor 85W", deliveryMonth: "Oct-26", version: "Rev-02",
+                    previousMonth: 600, currentMonth: 820, comingMonth: 900, // +70 revision
+                    companyCommitment: 800, companyCommitmentProvided: true,
+                    actualDispatch: 780, actualDispatchProvided: true, actualDispatchMonthAligned: true,
+                    dispatchDate: "2026-10-29", actualProductionQty: 800, balance: 20,
+                    monthlySchedules: { "2026-10": 820, "2026-11": 900, "2026-12": 950 },
+                    monthlyCommitments: { "2026-10": 800, "2026-11": 900, "2026-12": 950 },
+                    monthlyDispatches: { "2026-10": 780 }
+                },
+                {
+                    serialNo: "6", customer: "IFB Internal", customerGroup: "IFB Internal", customerCode: "CUST-IFB",
+                    customerName2: "IFB Verna Goa", partNo: "MTR-501-Aqua", customerPartNo: "IFB-AQ01",
+                    helper: "H-05", line: "Line-A", model: "Front Load Senator", oem: "IFB",
+                    productDescription: "Permanent Magnet Motor 90W Ultra Silent", deliveryMonth: "Oct-26", version: "Rev-02",
+                    previousMonth: 0, currentMonth: 300, comingMonth: 450, // newly introduced part!
+                    companyCommitment: 300, companyCommitmentProvided: true,
+                    actualDispatch: 290, actualDispatchProvided: true, actualDispatchMonthAligned: true,
+                    dispatchDate: "2026-10-27", actualProductionQty: 300, balance: 10,
+                    monthlySchedules: { "2026-10": 300, "2026-11": 450, "2026-12": 500 },
+                    monthlyCommitments: { "2026-10": 300, "2026-11": 450, "2026-12": 500 },
+                    monthlyDispatches: { "2026-10": 290 }
+                }
+            ]
+        }
+    ];
+
+    scheduleSnapshots = demoSnapshots;
+    saveScheduleSnapshotData(scheduleSnapshots);
+
+    const merged = mergeScheduleRows([], demoSnapshots[1].rows);
+    latestScheduleData = merged;
+    saveScheduleData(merged);
+
+    return res.json({
+        success: true,
+        message: "Loaded 2 realistic demo Excel schedule revisions successfully.",
+        snapshotsCount: scheduleSnapshots.length,
+        recordsCount: latestScheduleData.length
+    });
 });
 
 app.get("/api/imported-files", (req, res) => {
@@ -1023,22 +1244,11 @@ app.post("/upload-excel", upload.single("excelFile"), async (req, res) => {
         }
 
         const importedAt = new Date().toISOString();
-        const todayDate = importedAt.slice(0, 10);
         const requestedSnapshotDate = String(req.body.snapshotDate || "").trim();
         if (requestedSnapshotDate && !isValidDateOnly(requestedSnapshotDate)) {
             return res.status(400).json({ message: "Snapshot date must be a valid calendar date." });
         }
-        let snapshotDate;
-        if (!requestedSnapshotDate || requestedSnapshotDate === todayDate) {
-            const effectiveDate = getSnapshotEffectiveDate({
-                source: req.file.originalname,
-                rows,
-                snapshotDate: requestedSnapshotDate
-            });
-            snapshotDate = effectiveDate || todayDate;
-        } else {
-            snapshotDate = requestedSnapshotDate;
-        }
+        const snapshotDate = requestedSnapshotDate || importedAt.slice(0, 10);
         const importedRows = rows.map(row => ({
             ...row,
             deliveryMonth: row.deliveryMonth || "No month supplied",
@@ -1083,18 +1293,11 @@ app.post("/upload-excel", upload.single("excelFile"), async (req, res) => {
         latestScheduleData = updatedRows;
         const summary = getDashboardSummary(updatedRows);
 
-        const detectedMonths = Array.from(new Set(importedRows.flatMap(r => Object.keys(r.monthlySchedules || {})))).sort();
-        const hasDispatches = importedRows.some(r => Object.keys(r.monthlyDispatches || {}).length > 0);
-
         return res.json({
             message: dbSaved
                 ? "Excel file uploaded and schedule data processed successfully."
                 : "Excel file uploaded successfully. Local processing completed; Oracle DB save is not available.",
             filename: req.file.originalname,
-            sheetName: rows.sheetName || "",
-            importedCount: importedRows.length,
-            detectedMonths,
-            hasDispatches,
             snapshotId,
             snapshotDate,
             summary,
@@ -1129,32 +1332,89 @@ app.use((error, req, res, next) => {
     return res.status(400).json({ message });
 });
 
-function normalizeRowCustomer(row) {
-    if (!row) return row;
-    const norm = normalizeCustomer(row.customer, row.customerName2, row.customerCode);
-    return {
-        ...row,
-        customer: norm.name,
-        customerGroup: norm.group,
-        customerName2: norm.legalName || row.customerName2 || "",
-        customerCode: norm.code || row.customerCode || ""
-    };
+function refreshExistingSnapshots() {
+    let changed = false;
+    for (const snap of scheduleSnapshots) {
+        const hasMonths = (snap.rows || []).some(r => r.monthlySchedules && Object.keys(r.monthlySchedules).length > 0);
+        if (!hasMonths) {
+            const safeSource = path.basename(snap.source || "");
+            const candidates = [
+                path.join(uploadDir, `${snap.snapshotId}-${safeSource}`),
+                path.join(uploadDir, safeSource)
+            ];
+            for (const p of candidates) {
+                if (fs.existsSync(p)) {
+                    try {
+                        const wb = XLSX.readFile(p);
+                        const parsed = parseScheduleWorkbook(wb);
+                        if (parsed.length > 0) {
+                            snap.rows = parsed;
+                            changed = true;
+                            console.log(`Re-parsed ${snap.source} with enhanced parser: ${parsed.length} rows found.`);
+                        }
+                    } catch (e) {
+                        console.warn(`Could not re-parse ${p}:`, e.message);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    const octPlanPath = path.join(uploadDir, "Motor_Monthly_Plan_Oct26_Rev-01.xlsx");
+    if (fs.existsSync(octPlanPath) && !scheduleSnapshots.some(s => s.source?.includes("Oct26_Rev-01"))) {
+        try {
+            const wb = XLSX.readFile(octPlanPath);
+            const parsed = parseScheduleWorkbook(wb);
+            if (parsed.length > 0) {
+                const snap = {
+                    snapshotId: `oct26-rev1-${Date.now()}`,
+                    snapshotDate: "2026-10-05",
+                    capturedAt: new Date().toISOString(),
+                    source: "Motor_Monthly_Plan_Oct26_Rev-01.xlsx",
+                    rows: parsed
+                };
+                scheduleSnapshots.push(snap);
+                changed = true;
+                console.log(`Auto-registered ${snap.source}: ${parsed.length} rows.`);
+            }
+        } catch (e) {}
+    }
+
+    const sepPlanPath = path.join(uploadDir, "Motor_Monthly_Plan_Sep26.xlsx");
+    if (fs.existsSync(sepPlanPath) && !scheduleSnapshots.some(s => s.source?.includes("Sep26"))) {
+        try {
+            const wb = XLSX.readFile(sepPlanPath);
+            const parsed = parseScheduleWorkbook(wb);
+            if (parsed.length > 0) {
+                const snap = {
+                    snapshotId: `sep26-${Date.now()}`,
+                    snapshotDate: "2026-09-05",
+                    capturedAt: new Date().toISOString(),
+                    source: "Motor_Monthly_Plan_Sep26.xlsx",
+                    rows: parsed
+                };
+                scheduleSnapshots.push(snap);
+                changed = true;
+                console.log(`Auto-registered ${snap.source}: ${parsed.length} rows.`);
+            }
+        } catch (e) {}
+    }
+
+    if (changed) {
+        saveScheduleSnapshotData(scheduleSnapshots);
+        const allRows = scheduleSnapshots.flatMap(s => s.rows || []);
+        latestScheduleData = mergeScheduleRows([], allRows);
+        saveScheduleData(latestScheduleData);
+    }
 }
 
 async function startServer() {
-    latestScheduleData = loadScheduleData().map(normalizeRowCustomer);
+    latestScheduleData = loadScheduleData();
     console.log(`Loaded ${latestScheduleData.length} saved schedule records.`);
-    scheduleSnapshots = loadScheduleSnapshots().map(s => ({
-        ...s,
-        rows: (s.rows || []).map(normalizeRowCustomer)
-    }));
+    scheduleSnapshots = loadScheduleSnapshots();
     console.log(`Loaded ${scheduleSnapshots.length} historical schedule snapshots.`);
-    try {
-        saveScheduleData(latestScheduleData);
-        saveScheduleSnapshotData(scheduleSnapshots);
-    } catch (saveErr) {
-        console.warn("Could not re-persist normalized records during startup:", saveErr.message);
-    }
+    refreshExistingSnapshots();
     await initializeDatabase();
     app.listen(PORT, () => {
         console.log(`Server running on port ${PORT}`);

@@ -1,11 +1,8 @@
 
 node_modules/
-upload/*
-!upload/.gitkeep
 .env
 .env.*
 !.env.example
 *.log
-*.xlsx
+*.tmp
 .DS_Store
-Thumbs.db

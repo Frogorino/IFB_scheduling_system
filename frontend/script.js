@@ -6,9 +6,14 @@
 let allScheduleRows = [];
 let activeCustomer = "ALL";
 let analyticsRequestId = 0;
-let currentCustomerActivity = null;
-let currentActivityFilter = "all";
-let currentCustomerConsistencyData = null;
+
+const API_BASE_URL = ["3000", "3001"].includes(window.location.port)
+    ? ""
+    : `${window.location.protocol}//${window.location.hostname}:3001`;
+
+function apiUrl(path) {
+    return `${API_BASE_URL}${path}`;
+}
 
 const DEFAULT_MASTER_DATA = {
     customers: [],
@@ -22,6 +27,11 @@ let activeMasterData = DEFAULT_MASTER_DATA;
 function formatNumber(value) {
     if (value === null || value === undefined || isNaN(value)) return "0";
     return new Intl.NumberFormat("en-IN").format(Number(value));
+}
+
+function formatPercentValue(value) {
+    if (value === null || value === undefined || !Number.isFinite(Number(value))) return "N/A";
+    return `${Number(value).toFixed(2)}%`;
 }
 
 function escapeHTML(value) {
@@ -64,25 +74,6 @@ function showToast(message, type = "info") {
 // APP NAVIGATION & TAB SWITCHING
 // ==========================================================================
 
-let activeAnalysisSubtab = "patterns";
-
-function switchAnalysisSubtab(subtabId) {
-    activeAnalysisSubtab = subtabId;
-    document.querySelectorAll(".analysis-subtab-btn").forEach(btn => {
-        btn.classList.toggle("active", btn.getAttribute("data-subtab") === subtabId);
-    });
-
-    document.querySelectorAll(".analysis-subpane").forEach(pane => {
-        pane.classList.toggle("active", pane.id === `subpane-${subtabId}`);
-    });
-
-    if (subtabId === "patterns") {
-        loadCustomerConsistency();
-    } else if (subtabId === "wape" || subtabId === "fulfillment") {
-        refreshHistoricalAnalytics();
-    }
-}
-
 function switchTab(tabId) {
     document.querySelectorAll(".nav-tab").forEach(tab => {
         tab.classList.toggle("active", tab.getAttribute("data-tab") === tabId);
@@ -96,11 +87,8 @@ function switchTab(tabId) {
         renderMasterRecordsTable();
     }
     if (tabId === "analysis") {
-        if (activeAnalysisSubtab === "patterns") {
-            loadCustomerConsistency();
-        } else {
-            refreshHistoricalAnalytics();
-        }
+        initAnalysisTab();
+        refreshHistoricalAnalytics();
     }
     if (tabId === "upload") {
         loadImportedFilesList();
@@ -133,7 +121,7 @@ function initializeSnapshotDate() {
 
 async function loadMasterData() {
     try {
-        const res = await fetch("/master-data");
+        const res = await fetch(apiUrl("/master-data"));
         if (res.ok) {
             activeMasterData = await res.json();
             const statusEl = document.getElementById("backendStatusText");
@@ -256,13 +244,6 @@ function getPreviousMonthLabel() {
 function getMonthlyScheduleQuantity(row, monthKey = getSelectedMonthKey(), fallbackValue = 0) {
     if (row.monthlySchedules && Object.prototype.hasOwnProperty.call(row.monthlySchedules, monthKey)) {
         return Number(row.monthlySchedules[monthKey]) || 0;
-    }
-    return Number(fallbackValue) || 0;
-}
-
-function getMonthlyDispatchQuantity(row, monthKey = getSelectedMonthKey(), fallbackValue = 0) {
-    if (row.monthlyDispatches && Object.prototype.hasOwnProperty.call(row.monthlyDispatches, monthKey)) {
-        return Number(row.monthlyDispatches[monthKey]) || 0;
     }
     return Number(fallbackValue) || 0;
 }
@@ -404,8 +385,6 @@ function updateDashboardMonthLabels() {
         const element = document.getElementById(id);
         if (element) element.textContent = label;
     });
-    const wapeMonthBadge = document.getElementById("wapeActiveDeliveryMonth");
-    if (wapeMonthBadge) wapeMonthBadge.textContent = month1Label;
     renderDashboardForCustomer(activeCustomer);
     renderMasterRecordsTable();
 }
@@ -432,7 +411,7 @@ async function refreshHistoricalAnalytics() {
 
     try {
         const timelineQuery = new URLSearchParams({ month, customer });
-        const timelineResponse = await fetch(`/analytics/snapshots?${timelineQuery}`);
+        const timelineResponse = await fetch(apiUrl(`/analytics/snapshots?${timelineQuery}`));
         if (!timelineResponse.ok) throw new Error(`Snapshot timeline request failed (HTTP ${timelineResponse.status}).`);
         const timelineData = await timelineResponse.json();
         if (requestId !== analyticsRequestId) return;
@@ -442,13 +421,9 @@ async function refreshHistoricalAnalytics() {
         const distinctAvailable = available.filter(snapshot => !snapshot.duplicateOfPrevious);
         const oldPrevious = previousSelect?.value || "";
         const oldCurrent = currentSelect?.value || "";
-        const validIds = new Set(timeline.map(snapshot => snapshot.snapshotId));
-        const defaultPrevious = distinctAvailable.length >= 2
-            ? distinctAvailable[distinctAvailable.length - 2].snapshotId
-            : (timeline.length >= 2 ? timeline[0].snapshotId : "");
-        const defaultCurrent = distinctAvailable.length >= 2
-            ? distinctAvailable[distinctAvailable.length - 1].snapshotId
-            : (timeline.length >= 1 ? timeline[timeline.length - 1].snapshotId : "");
+        const validIds = new Set(available.map(snapshot => snapshot.snapshotId));
+        const defaultPrevious = distinctAvailable.length >= 2 ? distinctAvailable[distinctAvailable.length - 2].snapshotId : "";
+        const defaultCurrent = distinctAvailable.length >= 2 ? distinctAvailable[distinctAvailable.length - 1].snapshotId : "";
         const previousId = validIds.has(oldPrevious) ? oldPrevious : defaultPrevious;
         const currentId = validIds.has(oldCurrent) ? oldCurrent : defaultCurrent;
 
@@ -460,11 +435,8 @@ async function refreshHistoricalAnalytics() {
                     ? new Intl.DateTimeFormat("en-IN", { dateStyle: "medium", timeZone: "Asia/Kolkata" }).format(captured)
                     : "");
                 const duplicateLabel = snapshot.duplicateOfPrevious ? " · unchanged from previous upload" : "";
-                const demandNote = snapshot.hasDemand
-                    ? ` · ${snapshot.demandRows} demand rows for ${formatMonthLabel(month)}${duplicateLabel}`
-                    : ` · (0 rows for ${formatMonthLabel(month)})`;
-                const label = `${dateLabel} · ${snapshot.source || "Excel upload"}${demandNote}`;
-                return `<option value="${escapeHTML(snapshot.snapshotId)}">${escapeHTML(label)}</option>`;
+                const label = `${dateLabel} · ${snapshot.source || "Excel upload"}${snapshot.hasDemand ? ` · ${snapshot.demandRows} rows${duplicateLabel}` : " · no data for month/customer"}`;
+                return `<option value="${escapeHTML(snapshot.snapshotId)}"${snapshot.hasDemand ? "" : " disabled"}>${escapeHTML(label)}</option>`;
             }).join("");
             select.value = selectedId;
         };
@@ -476,7 +448,7 @@ async function refreshHistoricalAnalytics() {
             query.set("previousSnapshotId", previousId);
             query.set("currentSnapshotId", currentId);
         }
-        const response = await fetch(`/analytics/historical?${query}`);
+        const response = await fetch(apiUrl(`/analytics/historical?${query}`));
         if (!response.ok) throw new Error(`Analytics request failed (HTTP ${response.status}).`);
         const analytics = await response.json();
         if (requestId !== analyticsRequestId) return;
@@ -492,47 +464,29 @@ async function refreshHistoricalAnalytics() {
         const revisionRows = document.getElementById("demandRevisionRows");
         const executionRows = document.getElementById("companyExecutionRows");
         const scopeCustomer = customer === "ALL" ? "All Customers" : customer;
-        if (scopeLabel) scopeLabel.textContent = `${formatMonthLabel(month)} · ${scopeCustomer}`;
+        if (scopeLabel) scopeLabel.textContent = scopeCustomer;
 
         if (wapeValue) {
-            wapeValue.textContent = analytics.demandRevisionWape.value === null
-                ? "N/A"
-                : `${Number(analytics.demandRevisionWape.value).toFixed(2)}%`;
+            wapeValue.textContent = formatPercentValue(analytics.demandRevisionWape?.value);
         }
         if (wapeDetail) {
             const wape = analytics.demandRevisionWape;
             wapeDetail.textContent = wape.status === "needs_two_snapshots"
-                ? `Select two dated uploads containing demand for ${formatMonthLabel(month)}`
+                ? "Select two dated uploads containing demand for this delivery month"
                 : wape.status === "select_two_snapshots"
                     ? "Choose two different uploads"
                     : wape.status === "snapshots_out_of_order"
                         ? "Choose the earlier upload first"
                         : wape.status === "snapshot_has_no_month_data"
-                            ? `No demand overlap for ${formatMonthLabel(month)}: ${wape.previousSource || "Earlier"} has ${wape.previousDemandRows ?? 0} rows, ${wape.latestSource || "Later"} has ${wape.latestDemandRows ?? 0} rows`
+                            ? "One selected upload has no demand for this month/customer"
                 : wape.status === "zero_latest_demand"
                     ? "Latest demand is zero"
                     : wape.status === "available"
                         ? `${wape.previousSnapshotDate} (${wape.previousSource}) → ${wape.latestSnapshotDate} (${wape.latestSource})`
                         : "Demand history unavailable";
         }
-
-        const dispatchWapeVal = document.getElementById("analysisDispatchWapeValue");
-        const dispatchWapeDet = document.getElementById("analysisDispatchWapeDetail");
-        if (dispatchWapeVal) {
-            dispatchWapeVal.textContent = analytics.dispatchExecutionWape?.value !== null && analytics.dispatchExecutionWape?.value !== undefined
-                ? `${Number(analytics.dispatchExecutionWape.value).toFixed(2)}%`
-                : "N/A";
-        }
-        if (dispatchWapeDet) {
-            const dew = analytics.dispatchExecutionWape;
-            dispatchWapeDet.textContent = dew?.status === "available"
-                ? `|Dispatch - Schedule| across ${formatNumber(dew.comparedParts)} parts in ${formatMonthLabel(month)} (${dew.source || ""})`
-                : `No schedule vs dispatch records for ${formatMonthLabel(month)}`;
-        }
-
         if (revisionRows) {
             const revisions = analytics.demandRevisionWape.revisions || [];
-            const wape = analytics.demandRevisionWape;
             revisionRows.innerHTML = revisions.length
                 ? revisions.map(revision => `
                     <tr>
@@ -543,34 +497,16 @@ async function refreshHistoricalAnalytics() {
                         <td>${revision.change > 0 ? "+" : ""}${formatNumber(revision.change)}</td>
                     </tr>
                 `).join("")
-                : `<tr><td colspan="5" style="padding: 18px; line-height: 1.6; color: #475569;">${
-                    wape.status === "snapshot_has_no_month_data"
-                        ? `<div style="max-width: 680px; margin: 0 auto; text-align: left; background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 14px 18px;">
-                            <strong style="color: #b45309; font-size: 1.05em;">⚠️ Non-Overlapping Delivery Months for ${formatMonthLabel(month)}</strong><br>
-                            <div style="margin-top: 6px; font-size: 0.95em;">
-                                • Earlier upload (<em>${escapeHTML(wape.previousSource || "Earlier file")}</em>): <strong>${wape.previousDemandRows ?? 0} schedule lines</strong> for ${formatMonthLabel(month)}.<br>
-                                • Later upload (<em>${escapeHTML(wape.latestSource || "Later file")}</em>): <strong>${wape.latestDemandRows ?? 0} schedule lines</strong> for ${formatMonthLabel(month)}.
-                            </div>
-                            <div style="margin-top: 10px; padding-top: 8px; border-top: 1px solid #fef3c7; font-size: 0.88em; color: #78350f;">
-                                <strong>Why does this occur?</strong><br>
-                                • <strong>'Copy of Motor Division Dispatch Data.xlsx'</strong> covers <strong>April–September 2026</strong>.<br>
-                                • <strong>'Motor Monthly Plan Oct26'</strong> covers <strong>October–December 2026</strong>.<br>
-                                Because these two files track different calendar quarters, they do not share demand for any single delivery month. WAPE revision comparison measures how a single month's orders changed between revisions (e.g. Oct Plan Rev-01 vs Rev-02).
-                            </div>
-                           </div>`
-                        : ["needs_two_snapshots", "select_two_snapshots"].includes(analytics.demandRevisionWape.status)
-                            ? `Select two different dated uploads that contain this delivery month (${formatMonthLabel(month)}).`
-                            : analytics.demandRevisionWape.status === "snapshots_out_of_order"
-                                ? "Select the older upload as the earlier snapshot and the newer upload as the later snapshot."
-                                : analytics.demandRevisionWape.status === "available"
-                                    ? "No customer demand revisions found between these uploads."
-                                    : "Demand changes are not available for this month."
-                }</td></tr>`;
+                : `<tr><td colspan="5">${["needs_two_snapshots", "select_two_snapshots"].includes(analytics.demandRevisionWape.status)
+                    ? "Select two different dated uploads that contain this delivery month."
+                    : analytics.demandRevisionWape.status === "snapshots_out_of_order"
+                        ? "Select the older upload as the earlier snapshot and the newer upload as the later snapshot."
+                    : analytics.demandRevisionWape.status === "available"
+                        ? "No customer demand revisions found between these uploads."
+                        : "Demand changes are not available for this month."}</td></tr>`;
         }
 
         const onTime = analytics.onTime;
-        const fulfillment = onTime.monthlyFulfillment;
-        const hasFulfillment = fulfillment && fulfillment.quantityRate !== null && fulfillment.quantityRate !== undefined && Number.isFinite(fulfillment.quantityRate);
         const onTimeText = onTime.status === "due_date_not_passed"
             ? "Due at month-end"
             : onTime.status === "snapshot_before_due_date"
@@ -578,7 +514,7 @@ async function refreshHistoricalAnalytics() {
                 : onTime.status === "no_month_aligned_commitments"
                     ? "No month-aligned company commitment"
                     : onTime.status === "missing_dispatch_dates"
-                        ? (hasFulfillment ? `Assessed from monthly dispatch attainment (${formatMonthLabel(month)})` : "Dispatch date missing for one or more committed parts")
+                        ? "Dispatch date missing for one or more committed parts"
                         : onTime.status === "missing_dispatch_quantities"
                             ? "Dispatch quantity missing for one or more commitments"
                             : onTime.status === "zero_commitment"
@@ -588,66 +524,41 @@ async function refreshHistoricalAnalytics() {
                                     : "Unavailable";
 
         if (quantityValue) {
-            if (onTime.quantityRate !== null) {
-                quantityValue.textContent = `${Number(onTime.quantityRate).toFixed(2)}%`;
-            } else if (hasFulfillment) {
-                quantityValue.textContent = `${Number(fulfillment.quantityRate).toFixed(2)}%`;
-            } else {
-                quantityValue.textContent = "N/A";
-            }
+            quantityValue.textContent = formatPercentValue(onTime?.quantityRate);
         }
-        if (quantityDetail) {
-            if (onTime.quantityRate !== null) {
-                quantityDetail.textContent = `${formatNumber(onTime.onTimeQty)} of ${formatNumber(onTime.committedQty)} committed units on time`;
-            } else if (hasFulfillment) {
-                quantityDetail.textContent = `Monthly Attainment: ${formatNumber(fulfillment.fulfilledQty)} of ${formatNumber(fulfillment.committedQty)} committed units dispatched in ${formatMonthLabel(month)}`;
-            } else {
-                quantityDetail.textContent = onTimeText;
-            }
-        }
+        if (quantityDetail) quantityDetail.textContent = onTimeText;
         if (lineValue) {
-            if (onTime.lineRate !== null) {
-                lineValue.textContent = `${Number(onTime.lineRate).toFixed(2)}%`;
-            } else if (hasFulfillment) {
-                lineValue.textContent = `${Number(fulfillment.lineRate).toFixed(2)}%`;
-            } else {
-                lineValue.textContent = "N/A";
-            }
+            lineValue.textContent = formatPercentValue(onTime?.lineRate);
         }
         if (lineDetail) {
-            if (onTime.lineRate !== null) {
-                lineDetail.textContent = `${formatNumber(onTime.onTimeLines)} of ${formatNumber(onTime.commitmentLines)} committed part lines fully on time`;
-            } else if (hasFulfillment) {
-                lineDetail.textContent = `${formatNumber(fulfillment.fulfilledLines)} of ${formatNumber(fulfillment.commitmentLines)} committed part lines 100% fulfilled in ${formatMonthLabel(month)}`;
-            } else {
-                lineDetail.textContent = onTimeText;
-            }
+            lineDetail.textContent = onTime.status === "available"
+                ? `${formatNumber(onTime.onTimeLines)} of ${formatNumber(onTime.commitmentLines)} committed part lines fully on time`
+                : onTimeText;
         }
         if (executionRows) {
-            const rawIssues = onTime.issues || [];
-            const issues = rawIssues.filter(issue => issue.type !== "Missing dispatch date" || (issue.committedQty !== null && issue.dispatchedQty !== null && issue.committedQty > issue.dispatchedQty));
+            const issues = onTime.issues || [];
             executionRows.innerHTML = issues.length
                 ? issues.map(issue => `
                     <tr>
                         <td>${escapeHTML(issue.customer)}</td>
                         <td>${escapeHTML(issue.partNo)}</td>
-                        <td>${escapeHTML(issue.type === "Missing dispatch date" ? "Short dispatch" : issue.type)}</td>
+                        <td>${escapeHTML(issue.type)}</td>
                         <td>${formatNumber(issue.committedQty)}</td>
                         <td>${issue.dispatchedQty === null ? "Missing" : formatNumber(issue.dispatchedQty)}</td>
-                        <td>${escapeHTML(issue.dispatchDate || formatMonthLabel(month))}</td>
+                        <td>${escapeHTML(issue.dispatchDate || "Missing")}</td>
                     </tr>
                 `).join("")
-                : `<tr><td colspan="6">${(onTime.status === "available" || hasFulfillment)
-                    ? `All committed lines in ${formatMonthLabel(month)} met or exceeded dispatch targets.`
-                    : "Execution gaps cannot be identified until commitment and dispatch quantity are available."}</td></tr>`;
+                : `<tr><td colspan="6">${onTime.status === "available"
+                    ? "No short or late dispatch gaps found in the selected month."
+                    : "Execution gaps cannot be identified until commitment, dispatch quantity, and dispatch date are available."}</td></tr>`;
         }
 
         if (readiness) {
             const wapeStatus = analytics.demandRevisionWape.status;
-            const executionIsAvailable = onTime.status === "available" || hasFulfillment;
+            const executionIsAvailable = onTime.status === "available";
             const issues = onTime.issues || [];
-            const executionGaps = issues.filter(issue => /short dispatch|late dispatch/i.test(issue.type) || (issue.type === "Missing dispatch date" && issue.committedQty > issue.dispatchedQty));
-            const missingEvidence = issues.filter(issue => /^missing /i.test(issue.type) && issue.type !== "Missing dispatch date");
+            const executionGaps = issues.filter(issue => /short dispatch|late dispatch/i.test(issue.type));
+            const missingEvidence = issues.filter(issue => /^missing /i.test(issue.type));
             if (wapeStatus !== "available" && !executionIsAvailable) {
                 readiness.textContent = `${wapeStatus === "needs_two_snapshots"
                     ? "Select two dated uploads containing this delivery month."
@@ -660,9 +571,9 @@ async function refreshHistoricalAnalytics() {
                     readiness.textContent += ".";
                 }
             } else if (executionGaps.length) {
-                readiness.textContent = `${executionGaps.length} short dispatch gap(s) found against recorded commitments for ${formatMonthLabel(month)}. Attainment is ${hasFulfillment ? Number(fulfillment.quantityRate).toFixed(1) + "%" : ""}.`;
+                readiness.textContent = `${executionGaps.length} potential short/late execution gap(s) found against recorded commitments. Confirm root cause; demand revisions are shown separately and are not company performance errors.`;
             } else {
-                readiness.textContent = `Delivery performance is assessable for ${formatMonthLabel(month)}. Attainment is ${hasFulfillment ? Number(fulfillment.quantityRate).toFixed(1) + "%" : "100%"}. No short dispatch gaps were found.`;
+                readiness.textContent = "On-time performance is assessable from the selected month’s commitment and dispatch evidence. No short or late dispatch gaps were found.";
             }
         }
     } catch (error) {
@@ -681,377 +592,516 @@ async function refreshHistoricalAnalytics() {
     }
 }
 
-async function loadCustomerConsistency() {
-    const customer = activeCustomer || "ALL";
-    const label = document.getElementById("consistencyCustomerLabel");
-    if (label) {
-        label.textContent = customer === "ALL" ? "All Customers (Portfolio Overview)" : `${customer} Pattern Analysis`;
-    }
+// ==========================================================================
+// STREAMLINED SCHEDULE & PLAN ANALYSIS CENTER
+// ==========================================================================
 
-    try {
-        const res = await fetch(`/analytics/customer-consistency?customer=${encodeURIComponent(customer)}`);
-        if (!res.ok) throw new Error(`Consistency request failed (HTTP ${res.status}).`);
-        const data = await res.json();
+let currentStreamlinedMode = "same"; // "same" or "diff"
+let currentComparisonRows = [];
+let currentComparisonFilter = "all";
 
-        // 1. Consistency Score Card
-        const scoreVal = document.getElementById("consistencyScoreVal");
-        const badge = document.getElementById("consistencyBadge");
-        const scoreDetail = document.getElementById("consistencyScoreDetail");
-        const cvVal = document.getElementById("consistencyCvVal");
-        const cvDetail = document.getElementById("consistencyCvDetail");
-        const driftVal = document.getElementById("consistencyDriftVal");
-        const driftDetail = document.getElementById("consistencyDriftDetail");
-        const biasVal = document.getElementById("consistencyBiasVal");
-        const biasDetail = document.getElementById("consistencyBiasDetail");
-        const insightText = document.getElementById("consistencyInsightText");
+function selectStreamlinedMode(mode) {
+    currentStreamlinedMode = mode;
+    document.getElementById("tabBtnSame")?.classList.toggle("active", mode === "same");
+    document.getElementById("tabBtnDiff")?.classList.toggle("active", mode === "diff");
 
-        const consistency = data.consistency || {};
-        if (scoreVal) scoreVal.textContent = consistency.score !== null && consistency.score !== undefined ? `${consistency.score}/100` : "--";
-        if (badge) {
-            badge.textContent = consistency.rating || "No Data";
-            badge.className = `badge-status badge-${consistency.status || "neutral"}`;
-        }
-        if (scoreDetail) {
-            scoreDetail.textContent = consistency.status === "consistent"
-                ? "Highly predictable ordering pattern"
-                : consistency.status === "moderate"
-                    ? "Normal operational demand variation"
-                    : consistency.status === "volatile"
-                        ? "High demand fluctuation across months"
-                        : consistency.status === "erratic"
-                            ? "Erratic / unforecastable swings"
-                            : "Upload schedule to compute score";
-        }
+    const pSame = document.getElementById("panelControlsSame");
+    const pDiff = document.getElementById("panelControlsDiff");
+    if (pSame) pSame.style.display = mode === "same" ? "block" : "none";
+    if (pDiff) pDiff.style.display = mode === "diff" ? "block" : "none";
 
-        // 2. Volatility CV
-        if (cvVal) cvVal.textContent = consistency.cv !== undefined ? Number(consistency.cv).toFixed(3) : "--";
-        if (cvDetail) {
-            cvDetail.textContent = consistency.mean
-                ? `Monthly Mean: ${formatNumber(consistency.mean)} units (σ = ${formatNumber(consistency.stdDev)})`
-                : "Lower CV indicates stable demand";
-        }
-
-        // 3. Horizon Drift
-        const horizon = data.horizonDrift || {};
-        if (driftVal) {
-            driftVal.textContent = horizon.averageDriftPct !== null && horizon.averageDriftPct !== undefined
-                ? `${horizon.averageDriftPct > 0 ? "+" : ""}${Number(horizon.averageDriftPct).toFixed(1)}%`
-                : "--";
-        }
-        if (driftDetail) {
-            driftDetail.textContent = horizon.evaluatedMonthsCount
-                ? `Evaluated over ${horizon.evaluatedMonthsCount} multi-snapshot delivery cycles`
-                : "Needs 2+ dated uploads for same month";
-        }
-
-        // 4. Bias
-        if (biasVal) {
-            biasVal.textContent = horizon.biasPct !== null && horizon.biasPct !== undefined
-                ? `${horizon.biasPct > 0 ? "+" : ""}${Number(horizon.biasPct).toFixed(1)}%`
-                : "--";
-        }
-        if (biasDetail) {
-            biasDetail.textContent = horizon.biasType || "Systematic order drift direction";
-        }
-
-        // 5. Narrative insight
-        if (insightText) {
-            insightText.textContent = data.insight || "No pattern insight generated.";
-        }
-
-        // 6. Horizon Drift Table
-        const driftTable = document.getElementById("horizonDriftRows");
-        if (driftTable) {
-            const records = horizon.records || [];
-            if (!records.length) {
-                driftTable.innerHTML = `<tr><td colspan="7" style="text-align:center; padding:18px; color:#94a3b8;">
-                    ${horizon.status === "needs_multiple_snapshots"
-                        ? "Upload two or more dated spreadsheets covering the same delivery months to track tentative-to-firm forecast drift."
-                        : "No overlapping delivery months across snapshots yet."}
-                </td></tr>`;
-            } else {
-                driftTable.innerHTML = records.map(r => {
-                    const driftClass = r.driftPct < -10 ? "text-danger" : r.driftPct > 10 ? "text-warning" : "text-success";
-                    const finding = r.driftPct < -15
-                        ? "Erosion (Tentative over-forecasted)"
-                        : r.driftPct > 15
-                            ? "Demand Surge (Under-forecasted)"
-                            : "Stable Transition";
-                    return `
-                        <tr>
-                            <td><strong>${escapeHTML(displayDeliveryMonth(r.deliveryMonth))}</strong></td>
-                            <td>${escapeHTML(displayScheduleDate(r.earliestForecastDate))}</td>
-                            <td>${formatNumber(r.earliestDemand)}</td>
-                            <td><strong>${formatNumber(r.latestDemand)}</strong></td>
-                            <td>${r.change > 0 ? "+" : ""}${formatNumber(r.change)}</td>
-                            <td><span class="${driftClass}" style="font-weight:600;">${r.driftPct > 0 ? "+" : ""}${Number(r.driftPct).toFixed(1)}%</span></td>
-                            <td><span class="badge-subtle ${driftClass}">${escapeHTML(finding)}</span></td>
-                        </tr>
-                    `;
-                }).join("");
-            }
-        }
-
-        // 7. Customer Portfolio Breakdown Table (visible when ALL customers selected)
-        const portfolioPanel = document.getElementById("customerPortfolioPanel");
-        const activityGrid = document.getElementById("activityKpiGrid");
-        if (portfolioPanel) {
-            portfolioPanel.style.display = customer === "ALL" ? "block" : "none";
-        }
-        if (activityGrid) {
-            activityGrid.style.display = customer === "ALL" ? "grid" : "none";
-        }
-        currentCustomerConsistencyData = data;
-        const currentTargetMonth = document.getElementById("analysisMonth")?.value || getSelectedMonthKey();
-        await loadCustomerActivity(currentTargetMonth);
-
-        // 8. Part-level consistency table (visible when specific customer selected)
-        const partConsistencyPanel = document.getElementById("partConsistencyPanel");
-        const partRows = document.getElementById("partConsistencyRows");
-        if (partConsistencyPanel) {
-            partConsistencyPanel.style.display = customer === "ALL" ? "none" : "block";
-            const partSubtitle = partConsistencyPanel.querySelector(".panel-subtitle");
-            if (partSubtitle) {
-                partSubtitle.textContent = `Month-over-month volume variation for parts ordered by ${escapeHTML(customer)}.`;
-            }
-        }
-        if (partRows) {
-            const parts = data.parts || [];
-            if (!parts.length) {
-                partRows.innerHTML = `<tr><td colspan="9" style="text-align:center; padding:18px; color:#94a3b8;">No part schedule records for ${escapeHTML(customer)}.</td></tr>`;
-            } else {
-                partRows.innerHTML = parts.map(p => `
-                    <tr>
-                        <td><strong>${escapeHTML(p.partNo)}</strong></td>
-                        <td>${escapeHTML(p.productDescription || "-")}</td>
-                        <td>${escapeHTML(p.application || "-")}</td>
-                        <td>${p.monthsCount || 0}</td>
-                        <td><strong>${formatNumber(p.totalDemand)}</strong></td>
-                        <td>${formatNumber(p.meanDemand)}</td>
-                        <td>${formatNumber(p.minDemand)} / ${formatNumber(p.maxDemand)}</td>
-                        <td>${p.cv !== undefined ? Number(p.cv).toFixed(3) : "--"}</td>
-                        <td><span class="badge-status badge-${p.status || "neutral"}">${escapeHTML(p.rating || "-")}</span></td>
-                    </tr>
-                `).join("");
-            }
-        }
-    } catch (err) {
-        console.error("Unable to load customer consistency analytics:", err);
-    }
+    runStreamlinedAnalysis();
 }
 
-async function loadCustomerActivity(targetMonth) {
-    const monthInput = document.getElementById("analysisMonth");
-    const dashboardMonthInput = document.getElementById("dashboardMonth");
-    const month = targetMonth
-        || (monthInput && /^\d{4}-\d{2}$/.test(monthInput.value) ? monthInput.value : "")
-        || (dashboardMonthInput && /^\d{4}-\d{2}$/.test(dashboardMonthInput.value) ? dashboardMonthInput.value : "")
-        || getSelectedMonthKey();
+function onSameViewModeChange() {
+    const view = document.getElementById("sameViewMode")?.value || "metrics";
+    const metricWrap = document.getElementById("sameMetricMonthWrap");
+    const monthAWrap = document.getElementById("sameMonthAWrap");
+    const monthBWrap = document.getElementById("sameMonthBWrap");
 
+    if (view === "metrics") {
+        if (metricWrap) metricWrap.style.display = "flex";
+        if (monthAWrap) monthAWrap.style.display = "none";
+        if (monthBWrap) monthBWrap.style.display = "none";
+    } else {
+        if (metricWrap) metricWrap.style.display = "none";
+        if (monthAWrap) monthAWrap.style.display = "flex";
+        if (monthBWrap) monthBWrap.style.display = "flex";
+    }
+
+    runStreamlinedAnalysis();
+}
+
+async function onSameSheetChange() {
+    const sel = document.getElementById("sameSheetSelect");
+    if (!sel || !sel.value) return;
+    await loadComparisonMeta(sel.value);
+    runStreamlinedAnalysis();
+}
+
+function swapComparisonSheets() {
+    const baseSel = document.getElementById("baseSheetSelect");
+    const compSel = document.getElementById("compareSheetSelect");
+    if (!baseSel || !compSel) return;
+    const temp = baseSel.value;
+    baseSel.value = compSel.value;
+    compSel.value = temp;
+    runStreamlinedAnalysis();
+}
+
+async function initAnalysisTab() {
+    await loadComparisonMeta();
+    runStreamlinedAnalysis();
+}
+
+async function loadComparisonMeta(selectedSnapshotId) {
     try {
-        const res = await fetch(`/analytics/customer-activity?month=${encodeURIComponent(month)}`);
-        if (!res.ok) throw new Error(`Customer activity request failed (HTTP ${res.status}).`);
-        const data = await res.json();
-        currentCustomerActivity = data;
+        const url = selectedSnapshotId
+            ? `/analytics/comparison-meta?snapshotId=${encodeURIComponent(selectedSnapshotId)}`
+            : "/analytics/comparison-meta";
+        const res = await fetch(apiUrl(url));
+        if (!res.ok) throw new Error("Failed to load comparison metadata.");
+        const meta = await res.json();
 
-        const summary = data.summary || {
-            totalCustomers: 0,
-            activeCount: 0,
-            zeroMonthCount: 0,
-            atRiskCount: 0,
-            dormantCount: 0
+        const baseSel = document.getElementById("baseSheetSelect");
+        const compSel = document.getElementById("compareSheetSelect");
+        const sameSel = document.getElementById("sameSheetSelect");
+        const diffMonthSel = document.getElementById("diffMonthSelect");
+        const diffCustSel = document.getElementById("diffCustomerSelect");
+        const sameMonthA = document.getElementById("sameMonthA");
+        const sameMonthB = document.getElementById("sameMonthB");
+        const sameMetricMonth = document.getElementById("sameMetricMonth");
+        const sameCustSel = document.getElementById("sameCustomerSelect");
+
+        const snapshots = meta.snapshots || [];
+
+        const formatSnapOption = s => {
+            const label = `${s.date || ""} · ${s.source || "Sheet"} (${s.rowCount || 0} rows)`;
+            return `<option value="${escapeHTML(s.snapshotId)}">${escapeHTML(label)}</option>`;
         };
 
-        const totalElem = document.getElementById("activityTotalAccounts");
-        const activeElem = document.getElementById("activityActiveCount");
-        const zeroElem = document.getElementById("activityZeroMonthCount");
-        const dormantElem = document.getElementById("activityDormantCount");
-        if (totalElem) totalElem.textContent = summary.totalCustomers;
-        if (activeElem) activeElem.textContent = summary.activeCount;
-        if (zeroElem) zeroElem.textContent = summary.zeroMonthCount + summary.atRiskCount;
-        if (dormantElem) dormantElem.textContent = summary.dormantCount;
-
-        const pillAll = document.getElementById("pillCountAll");
-        const pillActive = document.getElementById("pillCountActive");
-        const pillZero = document.getElementById("pillCountZero");
-        const pillDormant = document.getElementById("pillCountDormant");
-        if (pillAll) pillAll.textContent = summary.totalCustomers;
-        if (pillActive) pillActive.textContent = summary.activeCount;
-        if (pillZero) pillZero.textContent = summary.zeroMonthCount + summary.atRiskCount;
-        if (pillDormant) pillDormant.textContent = summary.dormantCount;
-
-        const monthHeader = document.getElementById("portfolioSelectedMonthHeader");
-        if (monthHeader) {
-            monthHeader.textContent = `Demand (${displayDeliveryMonth(month)})`;
+        if (snapshots.length === 0) {
+            const emptyOpt = `<option value="">No Excel sheets uploaded</option>`;
+            if (baseSel) baseSel.innerHTML = emptyOpt;
+            if (compSel) compSel.innerHTML = emptyOpt;
+            if (sameSel) sameSel.innerHTML = emptyOpt;
+            return meta;
         }
 
-        const banner = document.getElementById("dashboardActivityBanner");
-        const headline = document.getElementById("dashboardActivityHeadline");
-        const subtext = document.getElementById("dashboardActivitySubtext");
-        if (banner) {
-            const zeroCount = summary.zeroMonthCount + summary.atRiskCount;
-            const dormantCount = summary.dormantCount;
-            if (zeroCount > 0 || dormantCount > 0) {
-                banner.style.display = "flex";
-                if (headline) {
-                    headline.textContent = `${zeroCount} Accounts with Zero Scheduled Demand for ${displayDeliveryMonth(month)} | ${dormantCount} Inactive/Dormant`;
-                }
-                if (subtext) {
-                    subtext.textContent = `Customer portfolio tracking highlights accounts without scheduled orders for the target month or dormant over 60–90+ days. Click to review.`;
-                }
+        const optionsHtml = snapshots.map(formatSnapOption).join("");
+        const oldBase = baseSel?.value;
+        const oldComp = compSel?.value;
+        const oldSame = sameSel?.value;
+
+        if (sameSel) {
+            sameSel.innerHTML = optionsHtml;
+            if (selectedSnapshotId && snapshots.some(s => s.snapshotId === selectedSnapshotId)) {
+                sameSel.value = selectedSnapshotId;
+            } else if (oldSame && snapshots.some(s => s.snapshotId === oldSame)) {
+                sameSel.value = oldSame;
             } else {
-                banner.style.display = "none";
+                sameSel.value = snapshots[0].snapshotId;
             }
         }
 
-        renderCustomerPortfolioTable();
+        if (baseSel) {
+            baseSel.innerHTML = optionsHtml;
+            if (oldBase && snapshots.some(s => s.snapshotId === oldBase)) {
+                baseSel.value = oldBase;
+            } else if (snapshots.length >= 2) {
+                baseSel.value = snapshots[0].snapshotId;
+            } else {
+                baseSel.value = snapshots[0].snapshotId;
+            }
+        }
+
+        if (compSel) {
+            compSel.innerHTML = optionsHtml;
+            if (oldComp && snapshots.some(s => s.snapshotId === oldComp)) {
+                compSel.value = oldComp;
+            } else if (snapshots.length >= 2) {
+                compSel.value = snapshots[1].snapshotId;
+            } else {
+                compSel.value = snapshots[0].snapshotId;
+            }
+        }
+
+        const months = meta.availableMonths || [];
+        const allMonths = meta.allMonths || months;
+        const diffMonthOpts = `<option value="ALL">All Months</option>` +
+            allMonths.map(m => `<option value="${escapeHTML(m)}">${formatMonthLabel(m)} (${m})</option>`).join("");
+
+        if (diffMonthSel) diffMonthSel.innerHTML = diffMonthOpts;
+
+        if (sameMetricMonth) {
+            sameMetricMonth.innerHTML = `<option value="ALL">All Months</option>` +
+                months.map(m => `<option value="${escapeHTML(m)}">${formatMonthLabel(m)} (${m})</option>`).join("");
+            if (months.length > 0) sameMetricMonth.value = months[0];
+        }
+
+        if (sameMonthA) {
+            sameMonthA.innerHTML = months.map(m => `<option value="${escapeHTML(m)}">${formatMonthLabel(m)} (${m})</option>`).join("");
+            if (months.length > 0) sameMonthA.value = months[0];
+        }
+        if (sameMonthB) {
+            sameMonthB.innerHTML = months.map(m => `<option value="${escapeHTML(m)}">${formatMonthLabel(m)} (${m})</option>`).join("");
+            if (months.length > 1) sameMonthB.value = months[1];
+            else if (months.length > 0) sameMonthB.value = months[0];
+        }
+
+        const customers = meta.availableCustomers || [];
+        const allCustomers = meta.allCustomers || customers;
+        const diffCustOpts = `<option value="ALL">All Customers</option>` +
+            allCustomers.map(c => `<option value="${escapeHTML(c)}">${escapeHTML(c)}</option>`).join("");
+        if (diffCustSel) diffCustSel.innerHTML = diffCustOpts;
+
+        const sameCustOpts = `<option value="ALL">All Customers</option>` +
+            customers.map(c => `<option value="${escapeHTML(c)}">${escapeHTML(c)}</option>`).join("");
+        if (sameCustSel) sameCustSel.innerHTML = sameCustOpts;
+
+        return meta;
     } catch (err) {
-        console.error("Failed to load customer activity:", err);
+        console.error("loadComparisonMeta error:", err);
     }
 }
 
-function filterCustomerActivityTable(filter) {
-    currentActivityFilter = filter || "all";
-
-    document.querySelectorAll(".activity-pill-btn").forEach(btn => {
-        if (btn.getAttribute("data-filter") === currentActivityFilter) {
-            btn.classList.add("active");
-        } else {
-            btn.classList.remove("active");
-        }
-    });
-
-    document.querySelectorAll(".activity-kpi-card").forEach(card => {
-        if (card.getAttribute("data-filter") === currentActivityFilter) {
-            card.classList.add("selected-kpi-card");
-        } else {
-            card.classList.remove("selected-kpi-card");
-        }
-    });
-
-    renderCustomerPortfolioTable();
+async function runStreamlinedAnalysis() {
+    if (currentStreamlinedMode === "same") {
+        await runSameSheetStreamlined();
+    } else {
+        await runDiffSheetsStreamlined();
+    }
 }
 
-function renderCustomerPortfolioTable() {
-    const portfolioRows = document.getElementById("customerPortfolioRows");
-    if (!portfolioRows) return;
+async function runSameSheetStreamlined() {
+    const snapshotId = document.getElementById("sameSheetSelect")?.value;
+    const view = document.getElementById("sameViewMode")?.value || "metrics";
+    const monthA = document.getElementById("sameMonthA")?.value;
+    const monthB = document.getElementById("sameMonthB")?.value;
+    const metricMonth = document.getElementById("sameMetricMonth")?.value || "ALL";
+    const customer = document.getElementById("sameCustomerSelect")?.value || "ALL";
 
-    const list = currentCustomerConsistencyData?.customerBreakdown || [];
-    const activityCustomers = currentCustomerActivity?.customers || [];
-    const activityMap = new Map();
-    activityCustomers.forEach(act => {
-        activityMap.set(act.customer, act);
-    });
+    const takeawayEl = document.getElementById("analysisTakeawayText");
+    const tbody = document.getElementById("comparisonTableBody");
 
-    const combinedCustomers = [...list];
-    const existingNames = new Set(list.map(c => c.customer));
-    activityCustomers.forEach(act => {
-        if (!existingNames.has(act.customer)) {
-            combinedCustomers.push({
-                customer: act.customer,
-                score: null,
-                rating: "Nil Activity",
-                status: "neutral",
-                cv: undefined,
-                meanDemand: act.meanDemand || 0,
-                totalDemand: act.lifetimeTotalDemand || 0,
-                biasPct: null,
-                biasType: "-"
-            });
-        }
-    });
-
-    combinedCustomers.sort((a, b) => {
-        const actA = activityMap.get(a.customer);
-        const actB = activityMap.get(b.customer);
-        const hasA = actA && actA.status !== "never_ordered" && ((a.totalDemand || actA.lifetimeTotalDemand || 0) > 0 || actA.targetMonthDemand > 0);
-        const hasB = actB && actB.status !== "never_ordered" && ((b.totalDemand || actB.lifetimeTotalDemand || 0) > 0 || actB.targetMonthDemand > 0);
-        if (hasA !== hasB) return hasA ? -1 : 1;
-        const scoreA = a.score !== null && a.score !== undefined ? a.score : -1;
-        const scoreB = b.score !== null && b.score !== undefined ? b.score : -1;
-        if (scoreB !== scoreA) return scoreB - scoreA;
-        return (b.totalDemand || 0) - (a.totalDemand || 0);
-    });
-
-    const filtered = combinedCustomers.filter(item => {
-        const act = activityMap.get(item.customer) || {
-            status: "never_ordered"
-        };
-        if (currentActivityFilter === "all") return true;
-        if (currentActivityFilter === "active") return act.status === "active";
-        if (currentActivityFilter === "zero_this_month") {
-            return act.status === "zero_this_month" || act.status === "at_risk";
-        }
-        if (currentActivityFilter === "dormant") {
-            return act.status === "dormant" || act.status === "never_ordered";
-        }
-        return true;
-    });
-
-    if (!filtered.length) {
-        portfolioRows.innerHTML = `<tr><td colspan="10" style="text-align:center; padding:24px; color:#64748b;">No customers match the "${escapeHTML(currentActivityFilter)}" filter.</td></tr>`;
+    if (!snapshotId) {
+        if (takeawayEl) takeawayEl.textContent = "Please upload an Excel workbook in the 'Excel Bulk Import' tab to begin analysis.";
+        if (tbody) tbody.innerHTML = `<tr><td colspan="9" style="text-align: center; color: #64748b; padding: 24px;">No Excel sheets uploaded yet.</td></tr>`;
         return;
     }
 
-    portfolioRows.innerHTML = filtered.map((c, i) => {
-        const act = activityMap.get(c.customer) || {
-            targetMonthDemand: 0,
-            lastActiveMonth: null,
-            monthsInactive: null,
-            status: "never_ordered",
-            statusLabel: "Nil Activity"
-        };
+    try {
+        const query = new URLSearchParams({
+            snapshotId,
+            mode: view,
+            monthA: monthA || "",
+            monthB: monthB || "",
+            metricA: "commitment",
+            metricB: "dispatch",
+            month: metricMonth,
+            customer
+        });
+        const res = await fetch(apiUrl(`/analytics/compare-within-sheet?${query}`));
+        if (!res.ok) throw new Error("Analysis request failed.");
+        const data = await res.json();
 
-        const lifetimeDemand = c.totalDemand || act.lifetimeTotalDemand || 0;
-        const hasActivity = act.status !== "never_ordered" && (lifetimeDemand > 0 || act.targetMonthDemand > 0);
-        const rating = !hasActivity ? "Nil Activity" : (c.rating || "Nil Activity");
-        const ratingStatus = !hasActivity ? "neutral" : (c.status || "neutral");
-        const scoreDisplay = hasActivity && c.score !== null && c.score !== undefined ? `${c.score}/100` : "--";
-        const cvDisplay = hasActivity && c.cv !== undefined && c.cv !== null ? Number(c.cv).toFixed(3) : "--";
-        const statusLabelDisplay = !hasActivity ? "Nil Activity" : (act.statusLabel || "Nil Activity");
+        if (data.status !== "available") {
+            if (takeawayEl) takeawayEl.textContent = data.message || "No data available for this selection.";
+            if (tbody) tbody.innerHTML = `<tr><td colspan="9" style="text-align: center; color: #64748b; padding: 24px;">${escapeHTML(data.message)}</td></tr>`;
+            return;
+        }
 
-        const targetDemandFormatted = act.targetMonthDemand > 0
-            ? `<strong style="color:#047857;">${formatNumber(act.targetMonthDemand)}</strong>`
-            : `<span style="color:#94a3b8;">0</span>`;
+        if (takeawayEl) takeawayEl.textContent = data.summary.takeaway;
 
-        const lastActiveDisplay = act.lastActiveMonth
-            ? escapeHTML(displayDeliveryMonth(act.lastActiveMonth))
-            : `<span style="color:#94a3b8;">Never</span>`;
+        if (view === "metrics") {
+            updateCard("card1Title", "Planned / Committed");
+            updateCard("card1Value", formatNumber(data.summary.totalA));
+            updateCard("card1Detail", `Committed Units (${data.monthLabel})`);
+
+            updateCard("card2Title", "Actual Dispatched");
+            updateCard("card2Value", formatNumber(data.summary.totalB));
+            updateCard("card2Detail", `Shipped Units (${data.monthLabel})`);
+
+            const diff = data.summary.netDiff;
+            updateCard("card3Title", "Delivery Shortfall");
+            updateCard("card3Value", diff < 0 ? `-${formatNumber(Math.abs(diff))}` : (diff > 0 ? `+${formatNumber(diff)}` : "0"));
+            updateCard("card3Detail", diff < 0 ? `Shortfall: ${formatNumber(data.summary.shortfallQty)} units` : "Fully met plan");
+
+            updateCard("card4Title", "Fulfillment Rate");
+            updateCard("card4Value", `${data.summary.fulfillmentRate.toFixed(1)}%`);
+            updateCard("card4Detail", `${data.summary.partsFulfilled} of ${data.summary.partsTotal} parts on target`);
+
+            const titleEl = document.getElementById("comparisonTableTitle");
+            const subEl = document.getElementById("comparisonTableSubtitle");
+            if (titleEl) titleEl.textContent = `Plan vs Dispatch: ${data.sheet.source} (${data.monthLabel})`;
+            if (subEl) subEl.textContent = `Fulfillment and dispatch shortfalls for ${customer === "ALL" ? "All Customers" : customer}`;
+
+            setTableHeader("Committed Qty", "Dispatched Qty", "Difference", "Fulfillment %");
+
+            updateCountPill("countPillAll", data.summary.partsTotal);
+            updateCountPill("countPillInc", data.summary.partsSurplus);
+            updateCountPill("countPillDec", data.summary.partsShortfall);
+            updateCountPill("countPillUnchanged", data.summary.partsFulfilled);
+        } else {
+            updateCard("card1Title", `${data.labelA} Demand`);
+            updateCard("card1Value", formatNumber(data.summary.totalA));
+            updateCard("card1Detail", `Baseline Month Total`);
+
+            updateCard("card2Title", `${data.labelB} Demand`);
+            updateCard("card2Value", formatNumber(data.summary.totalB));
+            updateCard("card2Detail", `Comparison Month Total`);
+
+            const netSign = data.summary.netChange >= 0 ? "+" : "";
+            const pctSign = data.summary.percentChange >= 0 ? "+" : "";
+            updateCard("card3Title", "Volume Ramp / Shift");
+            updateCard("card3Value", `${netSign}${formatNumber(data.summary.netChange)}`);
+            updateCard("card3Detail", `${pctSign}${data.summary.percentChange.toFixed(1)}% demand shift`);
+
+            updateCard("card4Title", "Parts Ramped Up / Down");
+            updateCard("card4Value", `↑${data.summary.partsIncreased} / ↓${data.summary.partsDecreased}`);
+            updateCard("card4Detail", `${data.summary.partsUnchanged} parts unchanged`);
+
+            const titleEl = document.getElementById("comparisonTableTitle");
+            const subEl = document.getElementById("comparisonTableSubtitle");
+            if (titleEl) titleEl.textContent = `Horizon Comparison: ${data.labelA} vs ${data.labelB} (${data.sheet.source})`;
+            if (subEl) subEl.textContent = `Volume shifts across delivery months in the same sheet`;
+
+            setTableHeader(`${data.labelA} Qty`, `${data.labelB} Qty`, "Difference (±)", "% Shift");
+
+            updateCountPill("countPillAll", data.summary.partsTotal);
+            updateCountPill("countPillInc", data.summary.partsIncreased);
+            updateCountPill("countPillDec", data.summary.partsDecreased);
+            updateCountPill("countPillUnchanged", data.summary.partsUnchanged);
+        }
+
+        currentComparisonRows = data.rows || [];
+        renderComparisonTable();
+    } catch (err) {
+        console.error("runSameSheetStreamlined error:", err);
+        if (takeawayEl) takeawayEl.textContent = "Error: " + err.message;
+    }
+}
+
+async function runDiffSheetsStreamlined() {
+    const baseSnapshotId = document.getElementById("baseSheetSelect")?.value;
+    const compareSnapshotId = document.getElementById("compareSheetSelect")?.value;
+    const month = document.getElementById("diffMonthSelect")?.value || "ALL";
+    const customer = document.getElementById("diffCustomerSelect")?.value || "ALL";
+
+    const takeawayEl = document.getElementById("analysisTakeawayText");
+    const tbody = document.getElementById("comparisonTableBody");
+
+    if (!baseSnapshotId || !compareSnapshotId || baseSnapshotId === compareSnapshotId) {
+        if (takeawayEl) takeawayEl.textContent = "Please select two different Excel workbooks to compare.";
+        if (tbody) tbody.innerHTML = `<tr><td colspan="9" style="text-align: center; color: #64748b; padding: 24px;">Please select two different Excel workbooks. If you only have one file, use the 'Analyze Within 1 Excel Sheet' tab.</td></tr>`;
+        return;
+    }
+
+    try {
+        const query = new URLSearchParams({ baseSnapshotId, compareSnapshotId, month, customer });
+        const res = await fetch(apiUrl(`/analytics/compare-different-sheets?${query}`));
+        if (!res.ok) throw new Error("Comparison request failed.");
+        const data = await res.json();
+
+        if (data.status !== "available") {
+            if (takeawayEl) takeawayEl.textContent = data.message || "Comparison unavailable.";
+            if (tbody) tbody.innerHTML = `<tr><td colspan="9" style="text-align: center; color: #64748b; padding: 24px;">${escapeHTML(data.message)}</td></tr>`;
+            return;
+        }
+
+        if (takeawayEl) takeawayEl.textContent = data.summary.takeaway;
+
+        updateCard("card1Title", `Base: ${data.baseSheet.source}`);
+        updateCard("card1Value", formatNumber(data.summary.baseTotal));
+        updateCard("card1Detail", `Baseline Demand (${data.monthLabel})`);
+
+        updateCard("card2Title", `Compare: ${data.compareSheet.source}`);
+        updateCard("card2Value", formatNumber(data.summary.compareTotal));
+        updateCard("card2Detail", `Revised Demand (${data.monthLabel})`);
+
+        const netSign = data.summary.netChange >= 0 ? "+" : "";
+        const pctSign = data.summary.percentChange >= 0 ? "+" : "";
+        updateCard("card3Title", "Net Volume Shift");
+        updateCard("card3Value", `${netSign}${formatNumber(data.summary.netChange)}`);
+        updateCard("card3Detail", `${pctSign}${data.summary.percentChange.toFixed(1)}% vs baseline`);
+
+        updateCard("card4Title", "Demand Volatility (WAPE)");
+        updateCard("card4Value", `${data.summary.wape.toFixed(2)}%`);
+        updateCard("card4Detail", data.summary.stabilityLabel);
+
+        const titleEl = document.getElementById("comparisonTableTitle");
+        const subEl = document.getElementById("comparisonTableSubtitle");
+        if (titleEl) titleEl.textContent = `Revision Comparison: ${data.baseSheet.source} ➔ ${data.compareSheet.source}`;
+        if (subEl) subEl.textContent = `Detailed part-level variances for ${data.monthLabel} (${customer === "ALL" ? "All Customers" : customer})`;
+
+        setTableHeader("Base Qty", "Compare Qty", "Difference (±)", "% Change");
+
+        updateCountPill("countPillAll", data.summary.partsTotal);
+        updateCountPill("countPillInc", data.summary.partsIncreased);
+        updateCountPill("countPillDec", data.summary.partsDecreased);
+        updateCountPill("countPillUnchanged", data.summary.partsUnchanged);
+
+        currentComparisonRows = data.rows || [];
+        renderComparisonTable();
+    } catch (err) {
+        console.error("runDiffSheetsStreamlined error:", err);
+        if (takeawayEl) takeawayEl.textContent = "Error: " + err.message;
+    }
+}
+
+function setTableHeader(colBase, colCompare, colDiff, colPct) {
+    const thBase = document.getElementById("thColBase");
+    const thComp = document.getElementById("thColCompare");
+    const thDiff = document.getElementById("thColDiff");
+    const thPct = document.getElementById("thColPct");
+    if (thBase) thBase.textContent = colBase;
+    if (thComp) thComp.textContent = colCompare;
+    if (thDiff) thDiff.textContent = colDiff;
+    if (thPct) thPct.textContent = colPct;
+}
+
+function updateCard(id, text) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+}
+
+function updateCountPill(id, count) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = formatNumber(count || 0);
+}
+
+function setComparisonStatusFilter(status) {
+    currentComparisonFilter = status;
+    document.querySelectorAll("#comparisonFilterPills .chip-filter").forEach(btn => {
+        btn.classList.toggle("active", btn.getAttribute("data-filter") === status);
+    });
+    renderComparisonTable();
+}
+
+function filterComparisonTable() {
+    renderComparisonTable();
+}
+
+function renderComparisonTable() {
+    const tbody = document.getElementById("comparisonTableBody");
+    const searchInput = document.getElementById("comparisonSearchInput");
+    if (!tbody) return;
+
+    const query = (searchInput?.value || "").toLowerCase().trim();
+    const filter = currentComparisonFilter;
+
+    let filtered = currentComparisonRows;
+
+    if (filter !== "all") {
+        filtered = filtered.filter(row => {
+            if (filter === "increased") return row.status === "increased" || row.status === "surplus" || row.status === "added";
+            if (filter === "decreased") return row.status === "decreased" || row.status === "shortfall" || row.status === "removed";
+            if (filter === "unchanged") return row.status === "unchanged" || row.status === "fulfilled";
+            return true;
+        });
+    }
+
+    if (query) {
+        filtered = filtered.filter(row =>
+            (row.customer || "").toLowerCase().includes(query) ||
+            (row.partNo || "").toLowerCase().includes(query) ||
+            (row.customerPartNo || "").toLowerCase().includes(query) ||
+            (row.productDescription || "").toLowerCase().includes(query) ||
+            (row.line || "").toLowerCase().includes(query)
+        );
+    }
+
+    if (filtered.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="9" style="text-align: center; color: #94a3b8; padding: 24px;">No matching part records found.</td></tr>`;
+        return;
+    }
+
+    const isMetricsView = currentStreamlinedMode === "same" && document.getElementById("sameViewMode")?.value === "metrics";
+
+    tbody.innerHTML = filtered.map(row => {
+        let statusBadge = "";
+        let diffClass = "diff-neutral";
+        const valA = row.baseQty ?? row.qtyA ?? 0;
+        const valB = row.compareQty ?? row.qtyB ?? 0;
+        const diff = row.change ?? row.diff ?? 0;
+        const pct = row.percentChange ?? row.fulfillmentRate ?? 0;
+
+        if (row.status === "increased") {
+            statusBadge = `<span class="badge-status-inc">Increased ↑</span>`;
+            diffClass = "diff-positive";
+        } else if (row.status === "decreased") {
+            statusBadge = `<span class="badge-status-dec">Decreased ↓</span>`;
+            diffClass = "diff-negative";
+        } else if (row.status === "added") {
+            statusBadge = `<span class="badge-status-new">New Part ★</span>`;
+            diffClass = "diff-positive";
+        } else if (row.status === "removed") {
+            statusBadge = `<span class="badge-status-rem">Removed ✕</span>`;
+            diffClass = "diff-negative";
+        } else if (row.status === "shortfall") {
+            statusBadge = `<span class="badge-status-shortfall">Shortfall ⚠️</span>`;
+            diffClass = "diff-negative";
+        } else if (row.status === "surplus") {
+            statusBadge = `<span class="badge-status-fulfilled">Surplus ✓</span>`;
+            diffClass = "diff-positive";
+        } else if (row.status === "fulfilled") {
+            statusBadge = `<span class="badge-status-fulfilled">Fulfilled ✓</span>`;
+            diffClass = "diff-neutral";
+        } else {
+            statusBadge = `<span class="badge-status-same">Unchanged =</span>`;
+            diffClass = "diff-neutral";
+        }
+
+        const diffDisplay = diff > 0 ? `+${formatNumber(diff)}` : formatNumber(diff);
+        const pctDisplay = isMetricsView
+            ? `${pct.toFixed(1)}%`
+            : `${diff > 0 ? "+" : ""}${pct.toFixed(1)}%`;
 
         return `
             <tr>
-                <td><strong>#${i + 1}</strong></td>
-                <td>
-                    <a href="javascript:void(0)" onclick="quickSelectCustomer('${escapeHTML(c.customer)}')" style="font-weight:600; color:var(--primary);">
-                        ${escapeHTML(c.customer)}
-                    </a>
-                </td>
-                <td><span class="badge-status badge-act-${escapeHTML(act.status)}">${escapeHTML(statusLabelDisplay)}</span></td>
-                <td>${targetDemandFormatted}</td>
-                <td>${lastActiveDisplay}</td>
-                <td><strong>${scoreDisplay}</strong></td>
-                <td><span class="badge-status badge-${escapeHTML(ratingStatus)}">${escapeHTML(rating)}</span></td>
-                <td>${cvDisplay}</td>
-                <td>${formatNumber(lifetimeDemand)}</td>
-                <td>${hasActivity && c.biasPct !== null && c.biasPct !== undefined ? `${c.biasPct > 0 ? "+" : ""}${Number(c.biasPct).toFixed(1)}%` : "N/A"}</td>
+                <td><strong>${escapeHTML(row.customer)}</strong></td>
+                <td><code>${escapeHTML(row.partNo)}</code></td>
+                <td>${escapeHTML(row.productDescription || "-")}</td>
+                <td>${escapeHTML(row.line || "-")}</td>
+                <td><strong>${formatNumber(valA)}</strong></td>
+                <td><strong>${formatNumber(valB)}</strong></td>
+                <td class="${diffClass}">${diffDisplay}</td>
+                <td class="${diffClass}">${pctDisplay}</td>
+                <td>${statusBadge}</td>
             </tr>
         `;
     }).join("");
 }
 
-function navigateToCustomerActivity(filter = "zero_this_month") {
-    switchTab("analysis");
-    switchAnalysisSubtab("patterns");
-    activeCustomer = "ALL";
-    const select = document.getElementById("customerSelect");
-    if (select) select.value = "ALL";
-    const analysisSelect = document.getElementById("analysisCustomerSelect");
-    if (analysisSelect) analysisSelect.value = "ALL";
-    filterCustomerActivityTable(filter);
-    const panel = document.getElementById("customerPortfolioPanel");
-    if (panel) {
-        panel.scrollIntoView({ behavior: "smooth", block: "start" });
+function exportComparisonToCSV() {
+    if (!currentComparisonRows || currentComparisonRows.length === 0) {
+        showToast("No comparison data available to export.", "error");
+        return;
     }
+    const headers = ["Customer", "Part No", "Description", "Line", "Baseline Qty", "Comparison Qty", "Difference", "Rate", "Status"];
+    const rows = currentComparisonRows.map(r => [
+        `"${(r.customer || "").replace(/"/g, '""')}"`,
+        `"${(r.partNo || "").replace(/"/g, '""')}"`,
+        `"${(r.productDescription || "").replace(/"/g, '""')}"`,
+        `"${(r.line || "").replace(/"/g, '""')}"`,
+        r.baseQty ?? r.qtyA ?? 0,
+        r.compareQty ?? r.qtyB ?? 0,
+        r.change ?? r.diff ?? 0,
+        (r.percentChange ?? r.fulfillmentRate ?? 0).toFixed(2),
+        `"${r.status}"`
+    ]);
+
+    const csvContent = [headers.join(","), ...rows.map(r => r.join(","))].join("\n");
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.setAttribute("download", `IFB_Analysis_${new Date().toISOString().slice(0, 10)}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    showToast("Comparison report exported successfully!", "success");
 }
 
 function onAnalysisFilterChange() {
@@ -1066,42 +1116,20 @@ function onAnalysisFilterChange() {
     activeCustomer = customer ? customer.value : "ALL";
     if (dashboardCustomer) dashboardCustomer.value = activeCustomer;
     updateDashboardMonthLabels();
-    loadCustomerConsistency();
-    loadCustomerActivity();
-    refreshHistoricalAnalytics();
 }
 
 function onDashboardMonthChange() {
     updateDashboardMonthLabels();
-    renderDashboardForCustomer(activeCustomer);
-    loadCustomerActivity();
     if (document.getElementById("tab-analysis")?.classList.contains("active")) {
         refreshHistoricalAnalytics();
-        loadCustomerConsistency();
     }
-}
-
-function quickSelectMonth(monthKey) {
-    const input = document.getElementById("dashboardMonth");
-    const analysisInput = document.getElementById("analysisMonth");
-    if (input) input.value = monthKey;
-    if (analysisInput) analysisInput.value = monthKey;
-    onDashboardMonthChange();
-    if (document.getElementById("tab-analysis")?.classList.contains("active")) {
-        refreshHistoricalAnalytics();
-        loadCustomerConsistency();
-    }
-    showToast(`Switched month view to ${monthKey}`, "info");
 }
 
 function onCustomerSelectChange() {
     const select = document.getElementById("customerSelect");
     activeCustomer = select ? select.value : "ALL";
-    const analysisCustomer = document.getElementById("analysisCustomerSelect");
-    if (analysisCustomer) analysisCustomer.value = activeCustomer;
     renderDashboardForCustomer(activeCustomer);
     if (document.getElementById("tab-analysis")?.classList.contains("active")) {
-        loadCustomerConsistency();
         refreshHistoricalAnalytics();
     }
 }
@@ -1110,12 +1138,7 @@ function quickSelectCustomer(custName) {
     activeCustomer = custName;
     const select = document.getElementById("customerSelect");
     if (select) select.value = custName;
-    const analysisSelect = document.getElementById("analysisCustomerSelect");
-    if (analysisSelect) analysisSelect.value = custName;
     renderDashboardForCustomer(custName);
-    loadCustomerConsistency();
-    refreshHistoricalAnalytics();
-    showToast(`Switched analysis view to ${custName}`, "info");
 }
 
 function renderDashboardForCustomer(customer) {
@@ -1154,8 +1177,7 @@ function renderDashboardForCustomer(customer) {
     if (comingEl) comingEl.textContent = formatNumber(comingMonthTotal);
 
     // Previous month's actual dispatch
-    const actualDispatchTotal = filtered.reduce((s, r) =>
-        s + getMonthlyDispatchQuantity(r, previousMonthKey, r.actualDispatch || 0), 0);
+    const actualDispatchTotal = filtered.reduce((s, r) => s + (Number(r.actualDispatch) || 0), 0);
     const dispEl = document.getElementById("actualDispatch");
     if (dispEl) dispEl.textContent = formatNumber(actualDispatchTotal);
 
@@ -1181,21 +1203,10 @@ function renderDashboardForCustomer(customer) {
     // Dashboard snapshot table
     const tableBody = document.getElementById("scheduleTable");
     if (tableBody) {
-        let snapshotRows = [...filtered];
-        if (currentSnapshotZeroFilter === "HIDE_ZERO") {
-            snapshotRows = snapshotRows.filter(r => getMonthlyScheduleQuantity(r, month1Key, r.currentMonth || r.customerSchedule || 0) > 0);
-        } else if (currentSnapshotZeroFilter === "ONLY_ZERO") {
-            snapshotRows = snapshotRows.filter(r => getMonthlyScheduleQuantity(r, month1Key, r.currentMonth || r.customerSchedule || 0) === 0);
-        }
-
-        if (!snapshotRows.length) {
-            tableBody.innerHTML = `<tr><td colspan="14" style="text-align: center; color: #94a3b8; padding: 20px;">No schedule records match the criteria for ${escapeHTML(label)}.</td></tr>`;
+        if (!filtered.length) {
+            tableBody.innerHTML = `<tr><td colspan="14" style="text-align: center; color: #94a3b8;">No schedules recorded for ${escapeHTML(label)}</td></tr>`;
         } else {
-            tableBody.innerHTML = snapshotRows.slice(0, 10).map((r, idx) => {
-                const s1 = getMonthlyScheduleQuantity(r, month1Key, r.currentMonth || r.customerSchedule || 0);
-                const s2 = getMonthlyScheduleQuantity(r, month2Key, r.comingMonth || 0);
-                const s3 = getMonthlyScheduleQuantity(r, month3Key, 0);
-                return `
+            tableBody.innerHTML = filtered.slice(0, 10).map((r, idx) => `
                 <tr>
                     <td>${escapeHTML(r.serialNo || idx + 1)}</td>
                     <td><strong>${escapeHTML(r.customerGroup || r.customer || "-")}</strong></td>
@@ -1208,12 +1219,11 @@ function renderDashboardForCustomer(customer) {
                     <td>${escapeHTML(r.model || "-")}</td>
                     <td>${escapeHTML(r.oem || "-")}</td>
                     <td>${escapeHTML(r.productDescription || "-")}</td>
-                    <td>${s1 === 0 ? `<span class="badge-zero ${currentSnapshotZeroFilter === 'ONLY_ZERO' ? 'badge-zero-highlight' : ''}" title="Zero Delivery Schedule">0</span>` : `<strong>${formatNumber(s1)}</strong>`}</td>
-                    <td style="background: #fefce8; color: #854d0e;">${s2 === 0 ? `<span class="badge-zero">0</span>` : formatNumber(s2)}</td>
-                    <td style="background: #fefce8; color: #854d0e;">${s3 === 0 ? `<span class="badge-zero">0</span>` : formatNumber(s3)}</td>
+                    <td><strong>${formatNumber(getMonthlyScheduleQuantity(r, month1Key, r.currentMonth || r.customerSchedule || 0))}</strong></td>
+                    <td style="background: #fefce8; color: #854d0e;">${formatNumber(getMonthlyScheduleQuantity(r, month2Key, r.comingMonth || 0))}</td>
+                    <td style="background: #fefce8; color: #854d0e;">${formatNumber(getMonthlyScheduleQuantity(r, month3Key, 0))}</td>
                 </tr>
-            `;
-            }).join("");
+            `).join("");
         }
     }
 
@@ -1232,323 +1242,29 @@ function renderDashboardForCustomer(customer) {
 }
 
 // ==========================================================================
-// DASHBOARD SNAPSHOT FILTERING
+// MASTER RECORDS TABLE (FILTER, SEARCH, EXPORT, DELETE)
 // ==========================================================================
-
-let currentSnapshotZeroFilter = "ALL";
-
-function setDashboardSnapshotFilter(filter) {
-    currentSnapshotZeroFilter = filter;
-    document.querySelectorAll(".chip-filter-sm[data-snapshot-filter]").forEach(btn => {
-        if (btn.getAttribute("data-snapshot-filter") === filter) {
-            btn.classList.add("active");
-        } else {
-            btn.classList.remove("active");
-        }
-    });
-    renderDashboardForCustomer(activeCustomer);
-}
-
-// ==========================================================================
-// MASTER RECORDS TABLE (FILTER, SEARCH, ZERO FILTERING, 9-MONTH HORIZON, EXPORT)
-// ==========================================================================
-
-let currentMasterQuickFilter = "all";
-let currentFilteredMasterRows = [];
-let currentHorizonMode = "3M"; // "3M" (3-month rolling) or "9M" (all 9 months)
-let currentDedupParts = false;
-
-// Fast in-memory lookup maps for customer+part -> combined schedules and dispatches across all files
-const customerPartMonthlyScheduleMap = new Map();
-const customerPartMonthlyDispatchMap = new Map();
-
-function getMonthKeyFromHeader(header) {
-    if (!header) return null;
-    const str = String(header).trim();
-    if (/^\d{4}-\d{2}$/.test(str)) return str;
-    if (/^\d{4}-\d{2}-\d{2}/.test(str)) return str.slice(0, 7);
-    const normalized = str.toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
-    if (/^(?:monthly plan|annual plan|plan|ifb|rev|revision|tentative|firm)\b/.test(normalized) && !/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/.test(normalized)) {
-        return null;
-    }
-    const match = normalized.match(/\b(january|jan|february|feb|march|mar|april|apr|may|june|jun|july|jul|august|aug|september|sep|october|oct|november|nov|december|dec)\s*['\- ]?\s*(\d{2}|\d{4})\b/);
-    if (!match) return null;
-
-    const months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
-    const monthIndex = months.indexOf(match[1].slice(0, 3));
-    if (monthIndex === -1) return null;
-
-    const yearStr = match[2];
-    const year = yearStr.length === 2 ? Number(`20${yearStr}`) : Number(yearStr);
-    return `${year}-${String(monthIndex + 1).padStart(2, "0")}`;
-}
-
-function buildCustomerPartMonthlyMaps() {
-    customerPartMonthlyScheduleMap.clear();
-    customerPartMonthlyDispatchMap.clear();
-
-    allScheduleRows.forEach(r => {
-        const key = ((r.customerCode || r.customer || "").trim() + "|" + (r.partNo || "").trim()).toLowerCase();
-        if (!customerPartMonthlyScheduleMap.has(key)) customerPartMonthlyScheduleMap.set(key, {});
-        if (!customerPartMonthlyDispatchMap.has(key)) customerPartMonthlyDispatchMap.set(key, {});
-
-        const schedObj = customerPartMonthlyScheduleMap.get(key);
-        if (r.monthlySchedules) {
-            Object.entries(r.monthlySchedules).forEach(([m, val]) => {
-                if (val !== undefined && val !== null && !isNaN(val)) {
-                    schedObj[m] = Number(val);
-                }
-            });
-        }
-
-        const dispObj = customerPartMonthlyDispatchMap.get(key);
-        if (r.monthlyDispatches) {
-            Object.entries(r.monthlyDispatches).forEach(([m, val]) => {
-                if (val !== undefined && val !== null && !isNaN(val)) {
-                    dispObj[m] = Number(val);
-                }
-            });
-        }
-    });
-}
-
-function getCombinedMonthlySchedule(row, monthKey, fallbackValue = 0) {
-    if (row.monthlySchedules && row.monthlySchedules[monthKey] !== undefined) {
-        return Number(row.monthlySchedules[monthKey]) || 0;
-    }
-    const key = ((row.customerCode || row.customer || "").trim() + "|" + (row.partNo || "").trim()).toLowerCase();
-    const mapObj = customerPartMonthlyScheduleMap.get(key);
-    if (mapObj && mapObj[monthKey] !== undefined) {
-        return mapObj[monthKey];
-    }
-    return Number(fallbackValue) || 0;
-}
-
-function getCombinedMonthlyDispatch(row, monthKey, fallbackValue = 0) {
-    if (row.monthlyDispatches && row.monthlyDispatches[monthKey] !== undefined) {
-        return Number(row.monthlyDispatches[monthKey]) || 0;
-    }
-    const key = ((row.customerCode || row.customer || "").trim() + "|" + (row.partNo || "").trim()).toLowerCase();
-    const mapObj = customerPartMonthlyDispatchMap.get(key);
-    if (mapObj && mapObj[monthKey] !== undefined) {
-        return mapObj[monthKey];
-    }
-    return Number(fallbackValue) || 0;
-}
-
-function getAllAvailableMonthKeys() {
-    const monthsSet = new Set();
-    allScheduleRows.forEach(r => {
-        if (r.monthlySchedules) {
-            Object.keys(r.monthlySchedules).forEach(m => {
-                if (/^\d{4}-\d{2}$/.test(m)) monthsSet.add(m);
-            });
-        }
-        if (r.monthlyDispatches) {
-            Object.keys(r.monthlyDispatches).forEach(m => {
-                if (/^\d{4}-\d{2}$/.test(m)) monthsSet.add(m);
-            });
-        }
-        const parsedKey = getMonthKeyFromHeader(r.deliveryMonth);
-        if (parsedKey) monthsSet.add(parsedKey);
-    });
-    // Ensure all 9 known months are represented in chronological order
-    const defaultMonths = ["2026-04", "2026-05", "2026-06", "2026-07", "2026-08", "2026-09", "2026-10", "2026-11", "2026-12"];
-    defaultMonths.forEach(m => monthsSet.add(m));
-    return Array.from(monthsSet).sort();
-}
-
-function setHorizonMode(mode) {
-    currentHorizonMode = mode;
-    const btn3M = document.getElementById("btnHorizon3M");
-    const btn9M = document.getElementById("btnHorizon9M");
-    const dedupWrap = document.getElementById("dedupPartsToggleWrap");
-
-    if (btn3M) btn3M.classList.toggle("active", mode === "3M");
-    if (btn9M) btn9M.classList.toggle("active", mode === "9M");
-
-    if (dedupWrap) {
-        dedupWrap.style.display = mode === "9M" ? "inline-flex" : "none";
-    }
-
-    const recBanner = document.getElementById("recordsPlanBanner");
-    if (recBanner) {
-        if (mode === "9M") {
-            recBanner.textContent = "Full Horizon View: April 2026 to December 2026 (All 9 Monthly Schedules)";
-        } else {
-            const selectedMonth = getSelectedMonthKey();
-            recBanner.textContent = `Monthly Plan: ${formatMonthLabel(selectedMonth)} (FIRM) and (TENTATIVE 2 months)`;
-        }
-    }
-
-    renderMasterRecordsTable();
-    showToast(mode === "9M" ? "Switched to Full 9-Month Horizon view (Apr–Dec 2026)" : "Switched to 3-Month Plan view", "info");
-}
-
-function onDedupPartsChange() {
-    const chk = document.getElementById("chkDedupParts");
-    currentDedupParts = chk ? chk.checked : false;
-    renderMasterRecordsTable();
-}
-
-function onRecordsDeliveryMonthChange() {
-    const monthSelect = document.getElementById("recordsMonthFilter");
-    const selectedMonth = monthSelect ? monthSelect.value : "ALL";
-    if (selectedMonth && selectedMonth !== "ALL") {
-        const dashMonth = document.getElementById("dashboardMonth");
-        if (dashMonth) dashMonth.value = selectedMonth;
-        updateDashboardMonthLabels();
-    }
-    renderMasterRecordsTable();
-}
-
-function setQuickZeroFilter(mode) {
-    currentMasterQuickFilter = mode;
-    const schedSelect = document.getElementById("recordsScheduleFilter");
-    const dispSelect = document.getElementById("recordsDispatchFilter");
-
-    if (mode === "all") {
-        if (schedSelect) schedSelect.value = "ALL";
-        if (dispSelect) dispSelect.value = "ALL";
-    } else if (mode === "hide_zero_schedules") {
-        if (schedSelect) schedSelect.value = "HIDE_ZERO";
-        if (dispSelect) dispSelect.value = "ALL";
-    } else if (mode === "hide_zero_dispatches") {
-        if (schedSelect) schedSelect.value = "ALL";
-        if (dispSelect) dispSelect.value = "HIDE_ZERO";
-    } else if (mode === "hide_both_zero") {
-        if (schedSelect) schedSelect.value = "ALL";
-        if (dispSelect) dispSelect.value = "ALL";
-    } else if (mode === "only_zero_schedules") {
-        if (schedSelect) schedSelect.value = "ONLY_ZERO";
-        if (dispSelect) dispSelect.value = "ALL";
-    } else if (mode === "only_zero_dispatches") {
-        if (schedSelect) schedSelect.value = "ALL";
-        if (dispSelect) dispSelect.value = "ONLY_ZERO";
-    } else if (mode === "both_zero") {
-        if (schedSelect) schedSelect.value = "ONLY_ZERO";
-        if (dispSelect) dispSelect.value = "ONLY_ZERO";
-    } else if (mode === "scheduled_not_dispatched") {
-        if (schedSelect) schedSelect.value = "HIDE_ZERO";
-        if (dispSelect) dispSelect.value = "ONLY_ZERO";
-    }
-
-    updateQuickFilterPillUI(mode);
-    renderMasterRecordsTable();
-}
-
-function onDropdownFilterChange() {
-    const schedVal = document.getElementById("recordsScheduleFilter")?.value || "ALL";
-    const dispVal = document.getElementById("recordsDispatchFilter")?.value || "ALL";
-
-    if (schedVal === "ALL" && dispVal === "ALL") {
-        currentMasterQuickFilter = "all";
-    } else if (schedVal === "HIDE_ZERO" && dispVal === "ALL") {
-        currentMasterQuickFilter = "hide_zero_schedules";
-    } else if (schedVal === "ALL" && dispVal === "HIDE_ZERO") {
-        currentMasterQuickFilter = "hide_zero_dispatches";
-    } else if (schedVal === "ONLY_ZERO" && dispVal === "ALL") {
-        currentMasterQuickFilter = "only_zero_schedules";
-    } else if (schedVal === "ALL" && dispVal === "ONLY_ZERO") {
-        currentMasterQuickFilter = "only_zero_dispatches";
-    } else if (schedVal === "ONLY_ZERO" && dispVal === "ONLY_ZERO") {
-        currentMasterQuickFilter = "both_zero";
-    } else if (schedVal === "HIDE_ZERO" && dispVal === "ONLY_ZERO") {
-        currentMasterQuickFilter = "scheduled_not_dispatched";
-    } else {
-        currentMasterQuickFilter = "custom";
-    }
-
-    updateQuickFilterPillUI(currentMasterQuickFilter);
-    renderMasterRecordsTable();
-}
-
-function updateQuickFilterPillUI(mode) {
-    document.querySelectorAll(".filter-pill[data-filter-mode]").forEach(pill => {
-        if (pill.getAttribute("data-filter-mode") === mode) {
-            pill.classList.add("active");
-        } else {
-            pill.classList.remove("active");
-        }
-    });
-}
-
-function resetAllMasterFilters() {
-    const searchInput = document.getElementById("tableSearchInput");
-    const custSelect = document.getElementById("recordsCustomerFilter");
-    const versionSelect = document.getElementById("recordsVersionFilter");
-    const monthSelect = document.getElementById("recordsMonthFilter");
-    const schedSelect = document.getElementById("recordsScheduleFilter");
-    const dispSelect = document.getElementById("recordsDispatchFilter");
-    const chkDedup = document.getElementById("chkDedupParts");
-
-    if (searchInput) searchInput.value = "";
-    if (custSelect) custSelect.value = "ALL";
-    if (versionSelect) versionSelect.value = "ALL";
-    if (monthSelect) monthSelect.value = "ALL";
-    if (schedSelect) schedSelect.value = "ALL";
-    if (dispSelect) dispSelect.value = "ALL";
-    if (chkDedup) chkDedup.checked = false;
-    currentDedupParts = false;
-
-    currentMasterQuickFilter = "all";
-    updateQuickFilterPillUI("all");
-    renderMasterRecordsTable();
-    showToast("Master table filters reset", "info");
-}
-
-function navigateToZeroSchedules() {
-    switchTab("records");
-    setQuickZeroFilter("only_zero_schedules");
-}
-
-function navigateToZeroDispatches() {
-    switchTab("records");
-    setQuickZeroFilter("only_zero_dispatches");
-}
 
 function filterMasterTable() {
     renderMasterRecordsTable();
 }
 
 function renderMasterRecordsTable() {
-    const thead = document.getElementById("masterRecordsHead");
     const tbody = document.getElementById("masterRecordsBody");
     const countEl = document.getElementById("recordCounterText");
     const searchInput = document.getElementById("tableSearchInput");
     const filterSelect = document.getElementById("recordsCustomerFilter");
     const versionSelect = document.getElementById("recordsVersionFilter");
     const monthSelect = document.getElementById("recordsMonthFilter");
-    const schedSelect = document.getElementById("recordsScheduleFilter");
-    const dispSelect = document.getElementById("recordsDispatchFilter");
 
     if (!tbody) return;
-
-    if (!customerPartMonthlyScheduleMap.size) {
-        buildCustomerPartMonthlyMaps();
-    }
-
-    const allAvailableMonths = getAllAvailableMonthKeys();
-
-    // Populate Delivery Months Dropdown dynamically with all 9 months (Apr-26 to Dec-26)
-    if (monthSelect) {
-        const currentSelectedMonth = monthSelect.value || "ALL";
-        let optionsHtml = `<option value="ALL">All Delivery Months (Apr–Dec 2026)</option>`;
-        allAvailableMonths.forEach(m => {
-            optionsHtml += `<option value="${m}">${formatMonthLabel(m)} (${formatLongMonthLabel(m)})</option>`;
-        });
-        monthSelect.innerHTML = optionsHtml;
-        monthSelect.value = (allAvailableMonths.includes(currentSelectedMonth) || currentSelectedMonth === "ALL")
-            ? currentSelectedMonth
-            : "ALL";
-    }
 
     const setFilterOptions = (select, label, values) => {
         if (!select) return "ALL";
         const selectedValue = select.value || "ALL";
         const options = [...new Set(values.filter(Boolean).map(String))].sort((a, b) => a.localeCompare(b));
         select.innerHTML = `<option value="ALL">${label}</option>` +
-            options.map(value => `<option value="${escapeHTML(value)}">${escapeHTML(value)}</option>`).join("");
+            options.map(value => `<option value="${escapeHTML(value)}">${escapeHTML(label === "All months" ? displayDeliveryMonth(value) : value)}</option>`).join("");
         select.value = options.includes(selectedValue) ? selectedValue : "ALL";
         return select.value;
     };
@@ -1557,7 +1273,7 @@ function renderMasterRecordsTable() {
     const searchTerm = (searchInput?.value || "").toLowerCase().trim();
     const custFilter = filterSelect?.value || "ALL";
     const versionFilter = setFilterOptions(versionSelect, "All versions", rows.map(row => row.version));
-    const monthFilter = monthSelect?.value || "ALL";
+    const monthFilter = setFilterOptions(monthSelect, "All months", rows.map(row => row.deliveryMonth || "No month supplied"));
 
     if (custFilter !== "ALL") {
         rows = rows.filter(r => r.customer === custFilter);
@@ -1565,15 +1281,8 @@ function renderMasterRecordsTable() {
     if (versionFilter !== "ALL") {
         rows = rows.filter(r => (r.version || "Current") === versionFilter);
     }
-
-    // Filter by expanded delivery month if a specific month is selected
     if (monthFilter !== "ALL") {
-        rows = rows.filter(r => {
-            const s = getCombinedMonthlySchedule(r, monthFilter);
-            const d = getCombinedMonthlyDispatch(r, monthFilter);
-            const dmKey = getMonthKeyFromHeader(r.deliveryMonth);
-            return s > 0 || d > 0 || dmKey === monthFilter;
-        });
+        rows = rows.filter(r => (r.deliveryMonth || "No month supplied") === monthFilter);
     }
 
     if (searchTerm) {
@@ -1584,258 +1293,22 @@ function renderMasterRecordsTable() {
         ].some(value => String(value || "").toLowerCase().includes(searchTerm)));
     }
 
-    // Deduplicate by Customer + Part if option is enabled in 9M Horizon mode
-    if (currentHorizonMode === "9M" && currentDedupParts) {
-        const seenKeys = new Set();
-        const dedupedRows = [];
-        rows.forEach(r => {
-            const key = ((r.customerCode || r.customer || "").trim() + "|" + (r.partNo || "").trim()).toLowerCase();
-            if (!seenKeys.has(key)) {
-                seenKeys.add(key);
-                dedupedRows.push(r);
-            }
-        });
-        rows = dedupedRows;
-    }
-
-    const month1Key = (monthFilter !== "ALL" && /^\d{4}-\d{2}$/.test(monthFilter))
-        ? monthFilter
-        : getSelectedMonthKey();
-    const month2Key = shiftYearMonth(month1Key, 1);
-    const month3Key = shiftYearMonth(month1Key, 2);
-
-    // Compute dynamic counts for the quick filter pills
-    const baseTotal = rows.length;
-    let countActiveSched = 0;
-    let countActiveDisp = 0;
-    let countActiveAny = 0;
-    let countZeroSched = 0;
-    let countZeroDisp = 0;
-    let countBothZero = 0;
-    let countSchedNoDisp = 0;
-
-    rows.forEach(r => {
-        let s;
-        if (currentHorizonMode === "9M") {
-            s = allAvailableMonths.reduce((sum, m) => sum + getCombinedMonthlySchedule(r, m), 0);
-        } else {
-            s = getCombinedMonthlySchedule(r, month1Key, r.currentMonth || r.customerSchedule || 0);
-        }
-        const d = getCombinedMonthlyDispatch(r, month1Key, r.actualDispatch || 0);
-
-        if (s > 0) countActiveSched++;
-        if (d > 0) countActiveDisp++;
-        if (s > 0 || d > 0) countActiveAny++;
-        if (s === 0) countZeroSched++;
-        if (d === 0) countZeroDisp++;
-        if (s === 0 && d === 0) countBothZero++;
-        if (s > 0 && d === 0) countSchedNoDisp++;
-    });
-
-    const badgeAll = document.getElementById("badgeCountAll");
-    const badgeActS = document.getElementById("badgeCountActiveSched");
-    const badgeActD = document.getElementById("badgeCountActiveDisp");
-    const badgeActAny = document.getElementById("badgeCountActiveAny");
-    const badgeZeroS = document.getElementById("badgeCountZeroSched");
-    const badgeZeroD = document.getElementById("badgeCountZeroDisp");
-    const badgeBothZ = document.getElementById("badgeCountBothZero");
-    const badgeSNoD = document.getElementById("badgeCountSchedNoDisp");
-
-    if (badgeAll) badgeAll.textContent = baseTotal;
-    if (badgeActS) badgeActS.textContent = countActiveSched;
-    if (badgeActD) badgeActD.textContent = countActiveDisp;
-    if (badgeActAny) badgeActAny.textContent = countActiveAny;
-    if (badgeZeroS) badgeZeroS.textContent = countZeroSched;
-    if (badgeZeroD) badgeZeroD.textContent = countZeroDisp;
-    if (badgeBothZ) badgeBothZ.textContent = countBothZero;
-    if (badgeSNoD) badgeSNoD.textContent = countSchedNoDisp;
-
-    // Apply delivery schedule and dispatch zero filtering
-    const schedFilter = schedSelect?.value || "ALL";
-    const dispFilter = dispSelect?.value || "ALL";
-
-    if (currentMasterQuickFilter === "hide_both_zero") {
-        rows = rows.filter(r => {
-            let s;
-            if (currentHorizonMode === "9M") {
-                s = allAvailableMonths.reduce((sum, m) => sum + getCombinedMonthlySchedule(r, m), 0);
-            } else {
-                s = getCombinedMonthlySchedule(r, month1Key, r.currentMonth || r.customerSchedule || 0);
-            }
-            const d = getCombinedMonthlyDispatch(r, month1Key, r.actualDispatch || 0);
-            return s > 0 || d > 0;
-        });
-    } else {
-        if (schedFilter === "HIDE_ZERO") {
-            rows = rows.filter(r => {
-                if (currentHorizonMode === "9M") {
-                    return allAvailableMonths.reduce((sum, m) => sum + getCombinedMonthlySchedule(r, m), 0) > 0;
-                }
-                return getCombinedMonthlySchedule(r, month1Key, r.currentMonth || r.customerSchedule || 0) > 0;
-            });
-        } else if (schedFilter === "ONLY_ZERO") {
-            rows = rows.filter(r => {
-                if (currentHorizonMode === "9M") {
-                    return allAvailableMonths.reduce((sum, m) => sum + getCombinedMonthlySchedule(r, m), 0) === 0;
-                }
-                return getCombinedMonthlySchedule(r, month1Key, r.currentMonth || r.customerSchedule || 0) === 0;
-            });
-        }
-
-        if (dispFilter === "HIDE_ZERO") {
-            rows = rows.filter(r => getCombinedMonthlyDispatch(r, month1Key, r.actualDispatch || 0) > 0);
-        } else if (dispFilter === "ONLY_ZERO") {
-            rows = rows.filter(r => getCombinedMonthlyDispatch(r, month1Key, r.actualDispatch || 0) === 0);
-        }
-    }
-
-    currentFilteredMasterRows = rows;
-
-    let filterNotes = [];
-    if (currentHorizonMode === "9M") filterNotes.push("All 9 Months View");
-    if (currentDedupParts && currentHorizonMode === "9M") filterNotes.push("Deduplicated (182 Parts)");
-    if (monthFilter !== "ALL") filterNotes.push(`Month: ${formatMonthLabel(monthFilter)}`);
-    if (currentMasterQuickFilter === "hide_both_zero") {
-        filterNotes.push("Hiding both zero");
-    } else {
-        if (schedFilter === "HIDE_ZERO") filterNotes.push("Hiding zero schedules");
-        if (schedFilter === "ONLY_ZERO") filterNotes.push("Zero schedules only");
-        if (dispFilter === "HIDE_ZERO") filterNotes.push("Hiding zero dispatches");
-        if (dispFilter === "ONLY_ZERO") filterNotes.push("Zero dispatches only");
-    }
-
-    const filterNoteStr = filterNotes.length ? ` (${filterNotes.join(" | ")})` : "";
-    if (countEl) countEl.textContent = `Showing ${rows.length} of ${allScheduleRows.length} records${filterNoteStr}`;
-
-    // Render Table Header dynamically for 3M vs 9M mode
-    if (thead) {
-        if (currentHorizonMode === "9M") {
-            thead.innerHTML = `
-                <tr class="super-header-row">
-                    <th colspan="11" class="th-info-group">Part &amp; Customer Information</th>
-                    <th colspan="${allAvailableMonths.length}" class="th-9m-header">Customer Demand Horizon (April 2026 – December 2026)</th>
-                    <th class="th-total-header">TOTAL</th>
-                    <th colspan="5" class="th-ops-header">Performance &amp; Status</th>
-                </tr>
-                <tr>
-                    <th>Sl No</th>
-                    <th>Customer</th>
-                    <th>Customer code</th>
-                    <th>Customer name2</th>
-                    <th>PART No.</th>
-                    <th>Helper</th>
-                    <th>Customer Part No</th>
-                    <th>Line</th>
-                    <th>Model</th>
-                    <th>OEM's</th>
-                    <th>Description</th>
-                    ${allAvailableMonths.map(m => `
-                        <th class="th-month-col ${m === month1Key ? 'th-active-focus' : ''}">${formatMonthLabel(m)}</th>
-                    `).join("")}
-                    <th class="th-total-header">Total (9M)</th>
-                    <th>Version</th>
-                    <th>Schedule Received</th>
-                    <th>Actual Dispatch</th>
-                    <th>Backlog</th>
-                    <th>Actions</th>
-                </tr>
-            `;
-        } else {
-            thead.innerHTML = `
-                <tr class="super-header-row">
-                    <th colspan="11" class="th-info-group">Part &amp; Customer Information</th>
-                    <th id="recordsFirmSuperHeader" class="th-firm-header">FIRM</th>
-                    <th colspan="2" class="th-tentative-super-header">TENTATIVE QTY</th>
-                    <th colspan="5" class="th-ops-header">Performance &amp; Status</th>
-                </tr>
-                <tr>
-                    <th>Sl No</th>
-                    <th>Customer</th>
-                    <th>Customer code</th>
-                    <th>Customer name2</th>
-                    <th>PART No.</th>
-                    <th>Helper</th>
-                    <th>Customer Part No</th>
-                    <th>Line</th>
-                    <th>Model</th>
-                    <th>OEM's</th>
-                    <th>Description</th>
-                    <th id="recordsMonth1Label">${formatMonthLabel(month1Key)}</th>
-                    <th id="recordsMonth2Label" class="th-tentative">${formatMonthLabel(month2Key)}</th>
-                    <th id="recordsMonth3Label" class="th-tentative">${formatMonthLabel(month3Key)}</th>
-                    <th>Version</th>
-                    <th>Schedule Received</th>
-                    <th>Actual Dispatch</th>
-                    <th>Backlog</th>
-                    <th>Actions</th>
-                </tr>
-            `;
-        }
-    }
+    if (countEl) countEl.textContent = `Showing ${rows.length} of ${allScheduleRows.length} records`;
 
     if (!rows.length) {
-        const totalColspan = currentHorizonMode === "9M" ? 11 + allAvailableMonths.length + 1 + 5 : 19;
-        tbody.innerHTML = `<tr><td colspan="${totalColspan}" style="text-align: center; padding: 28px; color: #94a3b8; font-size: 14px;">
-            No schedule records match the selected criteria.
-            <button type="button" class="btn-clear-filters" onclick="resetAllMasterFilters()" style="margin-left: 10px; padding: 4px 10px;">↺ Clear Filters</button>
-        </td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="19" style="text-align: center; padding: 24px; color: #94a3b8;">No schedule records match the current criteria.</td></tr>`;
         return;
     }
 
-    const isSingleZeroSched = schedFilter === "ONLY_ZERO";
-    const isSingleZeroDisp = dispFilter === "ONLY_ZERO";
+    const month1Key = getSelectedMonthKey();
+    const month2Key = shiftYearMonth(month1Key, 1);
+    const month3Key = shiftYearMonth(month1Key, 2);
 
     tbody.innerHTML = rows.map((r, displayIndex) => {
         const originalIndex = allScheduleRows.indexOf(r);
 
-        const monthDemand = getCombinedMonthlySchedule(r, month1Key, r.currentMonth || r.customerSchedule || 0);
-        const monthDispatch = getCombinedMonthlyDispatch(r, month1Key, r.actualDispatch || 0);
-        const monthCommitment = (r.monthlyCommitments && r.monthlyCommitments[month1Key] !== undefined)
-            ? Number(r.monthlyCommitments[month1Key])
-            : (r.companyCommitment ?? monthDemand);
-        const hasSpecificMonth = (r.monthlyCommitments && r.monthlyCommitments[month1Key] !== undefined) || (r.monthlyDispatches && r.monthlyDispatches[month1Key] !== undefined);
-        const monthBalance = hasSpecificMonth
-            ? (monthCommitment - monthDispatch)
-            : (r.balance ?? "-");
-
-        const isZeroSched = monthDemand === 0;
-        const isZeroDisp = monthDispatch === 0;
-        const isPending = monthDemand > 0 && monthDispatch === 0;
-
-        let scheduleColumnsHtml = "";
-
-        if (currentHorizonMode === "9M") {
-            let total9M = 0;
-            const monthCells = allAvailableMonths.map(m => {
-                const qty = getCombinedMonthlySchedule(r, m);
-                total9M += qty;
-                const isFocus = m === month1Key;
-                return `
-                    <td class="cell-month-val ${isFocus ? 'cell-active-focus' : ''}">
-                        ${qty === 0 ? `<span class="badge-zero">0</span>` : `<strong>${formatNumber(qty)}</strong>`}
-                    </td>
-                `;
-            }).join("");
-
-            scheduleColumnsHtml = `
-                ${monthCells}
-                <td class="cell-total-9m">${formatNumber(total9M)}</td>
-            `;
-        } else {
-            const m2 = getCombinedMonthlySchedule(r, month2Key, r.comingMonth || 0);
-            const m3 = getCombinedMonthlySchedule(r, month3Key, 0);
-
-            scheduleColumnsHtml = `
-                <td>${isZeroSched 
-                    ? `<span class="badge-zero ${isSingleZeroSched ? 'badge-zero-highlight' : ''}" title="Zero Delivery Schedule">0</span>` 
-                    : `<strong>${formatNumber(monthDemand)}</strong>`}</td>
-                <td style="background: #fefce8; color: #854d0e;">${m2 === 0 ? `<span class="badge-zero">0</span>` : formatNumber(m2)}</td>
-                <td style="background: #fefce8; color: #854d0e;">${m3 === 0 ? `<span class="badge-zero">0</span>` : formatNumber(m3)}</td>
-            `;
-        }
-
         return `
-            <tr class="${isZeroSched && isZeroDisp ? 'tr-both-zero' : ''}">
+            <tr>
                 <td>${escapeHTML(r.serialNo || displayIndex + 1)}</td>
                 <td><strong>${escapeHTML(r.customerGroup || r.customer || "-")}</strong></td>
                 <td>${escapeHTML(r.customerCode || "-")}</td>
@@ -1847,13 +1320,13 @@ function renderMasterRecordsTable() {
                 <td>${escapeHTML(r.model || "-")}</td>
                 <td>${escapeHTML(r.oem || "-")}</td>
                 <td>${escapeHTML(r.productDescription || "-")}</td>
-                ${scheduleColumnsHtml}
+                <td><strong>${formatNumber(getMonthlyScheduleQuantity(r, month1Key, r.currentMonth || r.customerSchedule || 0))}</strong></td>
+                <td style="background: #fefce8; color: #854d0e;">${formatNumber(getMonthlyScheduleQuantity(r, month2Key, r.comingMonth || 0))}</td>
+                <td style="background: #fefce8; color: #854d0e;">${formatNumber(getMonthlyScheduleQuantity(r, month3Key, 0))}</td>
                 <td>${escapeHTML(r.version || "Current")}</td>
                 <td>${escapeHTML(displayScheduleReceived(r))}</td>
-                <td>${isZeroDisp
-                    ? `<span class="badge-zero ${isSingleZeroDisp ? 'badge-zero-dispatch-highlight' : ''}" title="Zero Actual Dispatch">0</span>${isPending ? `<span class="badge-status-pending" title="Scheduled demand is ${formatNumber(monthDemand)}, but actual dispatch is 0">Pending</span>` : ''}`
-                    : `<span class="badge-dispatched">${formatNumber(monthDispatch)}</span>`}</td>
-                <td><strong>${typeof monthBalance === "number" ? formatNumber(monthBalance) : monthBalance}</strong></td>
+                <td>${formatNumber(r.actualDispatch || 0)}</td>
+                <td><strong>${r.balance === null || r.balance === undefined ? "-" : formatNumber(r.balance)}</strong></td>
                 <td>
                     <button class="btn-action-icon btn-delete-row" onclick="deleteScheduleRow(${originalIndex})" title="Delete entry">🗑️</button>
                 </td>
@@ -1866,10 +1339,9 @@ async function deleteScheduleRow(index) {
     if (!confirm("Are you sure you want to remove this schedule entry?")) return;
 
     try {
-        const response = await fetch(`/api/schedule-row/${index}`, { method: "DELETE" });
+        const response = await fetch(apiUrl(`/api/schedule-row/${index}`), { method: "DELETE" });
         if (!response.ok) throw new Error("Delete request failed.");
         allScheduleRows.splice(index, 1);
-        buildCustomerPartMonthlyMaps();
     } catch (error) {
         showToast("Unable to delete the schedule row from the backend.", "error");
         return;
@@ -1881,64 +1353,25 @@ async function deleteScheduleRow(index) {
 }
 
 function exportRecordsToCSV() {
-    const rowsToExport = currentFilteredMasterRows && currentFilteredMasterRows.length ? currentFilteredMasterRows : allScheduleRows;
-
-    if (!rowsToExport.length) {
+    if (!allScheduleRows.length) {
         showToast("No records available to export", "error");
         return;
     }
 
-    const allAvailableMonths = getAllAvailableMonthKeys();
     const month1Key = getSelectedMonthKey();
     const month2Key = shiftYearMonth(month1Key, 1);
     const month3Key = shiftYearMonth(month1Key, 2);
 
-    let headers;
-    let buildRowValues;
+    const headers = [
+        "Sl No", "Customer", "Customer code", "Customer name2", "PART No.", "Helper",
+        "Customer Part No", "Line", "Model", "OEM's", "Description",
+        formatMonthLabel(month1Key), formatMonthLabel(month2Key), formatMonthLabel(month3Key),
+        "Version", "Schedule Received Date", "Actual Dispatch Qty", "Backlog", "Saved At", "Source"
+    ];
+    const csvRows = [headers.join(",")];
 
-    if (currentHorizonMode === "9M") {
-        headers = [
-            "Sl No", "Customer", "Customer code", "Customer name2", "PART No.", "Helper",
-            "Customer Part No", "Line", "Model", "OEM's", "Description",
-            ...allAvailableMonths.map(m => formatMonthLabel(m)),
-            "Total 9M Demand",
-            "Version", "Schedule Received Date", "Actual Dispatch Qty", "Backlog", "Saved At", "Source"
-        ];
-
-        buildRowValues = (r, idx) => {
-            const monthlyVals = allAvailableMonths.map(m => getCombinedMonthlySchedule(r, m));
-            const total9M = monthlyVals.reduce((sum, v) => sum + v, 0);
-            return [
-                `"${r.serialNo || idx + 1}"`,
-                `"${r.customerGroup || r.customer || ''}"`,
-                `"${r.customerCode || ''}"`,
-                `"${r.customerName2 || ''}"`,
-                `"${r.partNo || ''}"`,
-                `"${r.helper || ''}"`,
-                `"${r.customerPartNo || ''}"`,
-                `"${r.line || ''}"`,
-                `"${r.model || ''}"`,
-                `"${r.oem || ''}"`,
-                `"${r.productDescription || ''}"`,
-                ...monthlyVals,
-                total9M,
-                `"${r.version || 'Current'}"`,
-                `"${r.scheduleReceivedDate || ''}"`,
-                getCombinedMonthlyDispatch(r, month1Key, r.actualDispatch || 0),
-                r.balance === null || r.balance === undefined ? "" : formatNumber(r.balance),
-                `"${r.importedAt || ''}"`,
-                `"${r.source || ''}"`
-            ];
-        };
-    } else {
-        headers = [
-            "Sl No", "Customer", "Customer code", "Customer name2", "PART No.", "Helper",
-            "Customer Part No", "Line", "Model", "OEM's", "Description",
-            formatMonthLabel(month1Key), formatMonthLabel(month2Key), formatMonthLabel(month3Key),
-            "Version", "Schedule Received Date", "Actual Dispatch Qty", "Backlog", "Saved At", "Source"
-        ];
-
-        buildRowValues = (r, idx) => [
+    allScheduleRows.forEach((r, idx) => {
+        csvRows.push([
             `"${r.serialNo || idx + 1}"`,
             `"${r.customerGroup || r.customer || ''}"`,
             `"${r.customerCode || ''}"`,
@@ -1950,30 +1383,24 @@ function exportRecordsToCSV() {
             `"${r.model || ''}"`,
             `"${r.oem || ''}"`,
             `"${r.productDescription || ''}"`,
-            getCombinedMonthlySchedule(r, month1Key, r.currentMonth || r.customerSchedule || 0),
-            getCombinedMonthlySchedule(r, month2Key, r.comingMonth || 0),
-            getCombinedMonthlySchedule(r, month3Key, 0),
+            getMonthlyScheduleQuantity(r, month1Key, r.currentMonth || r.customerSchedule || 0),
+            getMonthlyScheduleQuantity(r, month2Key, r.comingMonth || 0),
+            getMonthlyScheduleQuantity(r, month3Key, 0),
             `"${r.version || 'Current'}"`,
             `"${r.scheduleReceivedDate || ''}"`,
-            getCombinedMonthlyDispatch(r, month1Key, r.actualDispatch || 0),
+            r.actualDispatch || 0,
             r.balance === null || r.balance === undefined ? "" : formatNumber(r.balance),
             `"${r.importedAt || ''}"`,
             `"${r.source || ''}"`
-        ];
-    }
-
-    const csvRows = [headers.join(",")];
-    rowsToExport.forEach((r, idx) => {
-        csvRows.push(buildRowValues(r, idx).join(","));
+        ].join(","));
     });
 
     const blob = new Blob([csvRows.join("\n")], { type: "text/csv;charset=utf-8;" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    const horizonSuffix = currentHorizonMode === "9M" ? "9Months" : "3Months";
-    link.download = `IFB_Schedule_Export_${horizonSuffix}_${new Date().toISOString().slice(0, 10)}.csv`;
+    link.download = `IFB_Schedule_Export_${new Date().toISOString().slice(0, 10)}.csv`;
     link.click();
-    showToast(`Exported ${rowsToExport.length} schedule records (${currentHorizonMode} mode) to CSV`, "success");
+    showToast("Master schedule exported to CSV", "success");
 }
 
 async function loadImportedFilesList() {
@@ -1981,7 +1408,7 @@ async function loadImportedFilesList() {
     if (!tbody) return;
 
     try {
-        const res = await fetch("/api/imported-files");
+        const res = await fetch(apiUrl("/api/imported-files"));
         if (!res.ok) throw new Error("Failed to fetch imported files list.");
         const files = await res.json();
 
@@ -2015,7 +1442,7 @@ async function loadImportedFilesList() {
 }
 
 function downloadImportedFile(snapshotId) {
-    window.location.href = `/api/download-file/${encodeURIComponent(snapshotId)}`;
+    window.location.href = apiUrl(`/api/download-file/${encodeURIComponent(snapshotId)}`);
 }
 
 async function deleteImportedFile(snapshotId, filename) {
@@ -2024,15 +1451,24 @@ async function deleteImportedFile(snapshotId, filename) {
     }
 
     try {
-        const res = await fetch(`/api/imported-file/${encodeURIComponent(snapshotId)}`, {
+        const res = await fetch(apiUrl(`/api/imported-file/${encodeURIComponent(snapshotId)}`), {
             method: "DELETE"
         });
         if (!res.ok) throw new Error("Failed to delete snapshot.");
+        const result = await res.json();
         showToast("Workbook & snapshot deleted successfully", "success");
 
-        await loadDashboardData();
+        if (Array.isArray(result.rows)) {
+            allScheduleRows = result.rows;
+        } else {
+            await loadDashboardData();
+        }
+        renderDashboardForCustomer(activeCustomer);
+        renderMasterRecordsTable();
         await loadMasterData();
         loadImportedFilesList();
+        await loadComparisonMeta();
+        runStreamlinedAnalysis();
     } catch (err) {
         showToast(err.message, "error");
     }
@@ -2047,42 +1483,12 @@ function triggerFileInput() {
     if (fileInput) fileInput.click();
 }
 
-function extractDateFromFilename(name) {
-    if (!name) return "";
-    const str = String(name);
-    const dmy = str.match(/(?:^|[^\d])(\d{1,2})[._/-](\d{1,2})[._/-](\d{4})(?:[^\d]|$)/);
-    if (dmy) {
-        let day = Number(dmy[1]);
-        let month = Number(dmy[2]);
-        const year = Number(dmy[3]);
-        if (day > 12 && month <= 12) {} else if (month > 12 && day <= 12) { [day, month] = [month, day]; }
-        if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
-            return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-        }
-    }
-    const monthNames = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
-    const named = str.match(/(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s._-]*(\d{2,4})/i);
-    if (named) {
-        const mi = monthNames.indexOf(named[1].slice(0, 3).toLowerCase());
-        if (mi !== -1) {
-            const y = named[2].length === 2 ? `20${named[2]}` : named[2];
-            return `${y}-${String(mi + 1).padStart(2, "0")}-01`;
-        }
-    }
-    return "";
-}
-
 function handleFileSelect(event) {
     const file = event.target.files[0];
     const badge = document.getElementById("selectedFileName");
     if (file && badge) {
         badge.textContent = `Selected: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`;
         badge.style.display = "inline-block";
-        const detected = extractDateFromFilename(file.name);
-        const dateInput = document.getElementById("snapshotDate");
-        if (detected && dateInput) {
-            dateInput.value = detected;
-        }
     }
     const status = document.getElementById("uploadStatus");
     if (status) status.textContent = "";
@@ -2152,14 +1558,14 @@ async function uploadExcel() {
     }
 
     try {
-        const response = await fetch("/upload-excel", { method: "POST", body: formData });
+        const response = await fetch(apiUrl("/upload-excel"), { method: "POST", body: formData });
         const responseText = await response.text();
         let result;
         try {
             result = JSON.parse(responseText);
         } catch {
             if (response.status === 405) {
-                throw new Error("This server does not accept spreadsheet uploads. Start the app with `npm start` and open it from http://localhost:3000 so the request reaches the backend.");
+                throw new Error("This server does not accept spreadsheet uploads. Start the app backend and open the app through http://localhost:3001 or Live Server.");
             }
             throw new Error(`The server returned an unexpected response (HTTP ${response.status}). Please check the spreadsheet and try again.`);
         }
@@ -2176,22 +1582,19 @@ async function uploadExcel() {
             }
 
             allScheduleRows = importedRows;
-            buildCustomerPartMonthlyMaps();
             await loadMasterData();
             activeCustomer = "ALL";
             renderDashboardForCustomer(activeCustomer);
             renderMasterRecordsTable();
             loadImportedFilesList();
+            loadComparisonMeta();
 
             if (status) {
                 status.style.color = "#059669";
-                const sheetInfo = result.sheetName ? ` [Sheet: ${result.sheetName}]` : "";
-                const horizonInfo = result.detectedMonths && result.detectedMonths.length ? ` (Horizons: ${result.detectedMonths.join(", ")})` : "";
-                const dispatchInfo = result.hasDispatches ? " Dispatches recorded." : "";
-                status.textContent = `${result.message} ${result.importedCount || allScheduleRows.length} rows imported${sheetInfo}.${horizonInfo}${dispatchInfo}`;
+                status.textContent = `${result.message} ${allScheduleRows.length} rows loaded from "${result.filename}" as snapshot dated ${result.snapshotDate || "today"}.`;
             }
 
-            showToast(`Spreadsheet uploaded successfully (${result.importedCount || allScheduleRows.length} rows).`, "success");
+            showToast("Spreadsheet uploaded and its rows are now available in the portal.", "success");
             switchTab("dashboard");
         } else {
             const message = result.message || result.error || `Upload failed (HTTP ${response.status}).`;
@@ -2222,30 +1625,36 @@ async function uploadExcel() {
 // INITIAL DATA LOADER
 // ==========================================================================
 
-async function initApplication() {
-    startClock();
-    initializeSnapshotDate();
-    initDragAndDrop();
-    updateDashboardMonthLabels();
+async function loadDashboardData() {
     try {
-        const response = await fetch("/dashboard");
+        const response = await fetch(apiUrl("/dashboard"));
         if (!response.ok) {
             throw new Error("Dashboard request failed.");
         }
         const data = await response.json();
         allScheduleRows = Array.isArray(data.rows) ? data.rows : [];
-        buildCustomerPartMonthlyMaps();
+        return allScheduleRows;
     } catch (error) {
         allScheduleRows = [];
+        console.error("loadDashboardData error:", error);
         showToast("Unable to fetch schedule data. Start the backend and try again.", "error");
+        return [];
     }
+}
+
+async function initApplication() {
+    startClock();
+    initializeSnapshotDate();
+    initDragAndDrop();
+    updateDashboardMonthLabels();
+    await loadDashboardData();
 
     await loadMasterData();
     activeCustomer = "ALL";
     renderDashboardForCustomer(activeCustomer);
     renderMasterRecordsTable();
     loadImportedFilesList();
-    await loadCustomerActivity();
+    loadComparisonMeta();
     switchTab("dashboard");
 }
 

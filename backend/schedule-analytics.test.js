@@ -3,8 +3,9 @@ const assert = require("node:assert/strict");
 const {
     calculateScheduleAnalytics,
     getDemandSnapshotTimeline,
-    calculateCustomerConsistency,
-    calculateCustomerActivity
+    compareDifferentSheets,
+    compareWithinSameSheet,
+    getSnapshotComparisonMeta
 } = require("./schedule-analytics");
 
 test("demand revision WAPE compares like parts across the latest two snapshots", () => {
@@ -307,161 +308,154 @@ test("on-time performance does not use a snapshot captured before the due date",
     assert.equal(result.onTime.quantityRate, null);
 });
 
-test("customer consistency identifies stable demand with low coefficient of variation", () => {
-    const snapshots = [{
-        snapshotId: "snap-1",
-        snapshotDate: "2026-10-01",
-        capturedAt: "2026-10-01T10:00:00.000Z",
-        rows: [
-            { customer: "Alpha", partNo: "P1", monthlySchedules: { "2026-10": 1000, "2026-11": 1020, "2026-12": 990 } }
-        ]
-    }];
-
-    const result = calculateCustomerConsistency(snapshots, "Alpha");
-    assert.equal(result.status, "consistent");
-    assert.equal(result.consistency.rating, "Highly Consistent");
-    assert.ok(result.consistency.cv < 0.15);
-    assert.ok(result.consistency.score >= 90);
-    assert.equal(result.parts.length, 1);
-    assert.equal(result.parts[0].partNo, "P1");
-    assert.equal(result.parts[0].status, "consistent");
-});
-
-test("customer consistency detects volatile demand when order volumes swing widely", () => {
-    const snapshots = [{
-        snapshotId: "snap-1",
-        snapshotDate: "2026-10-01",
-        capturedAt: "2026-10-01T10:00:00.000Z",
-        rows: [
-            { customer: "Beta", partNo: "P2", monthlySchedules: { "2026-10": 500, "2026-11": 1100, "2026-12": 600 } }
-        ]
-    }];
-
-    const result = calculateCustomerConsistency(snapshots, "Beta");
-    assert.ok(result.consistency.cv > 0.35);
-    assert.ok(result.consistency.cv <= 0.60);
-    assert.equal(result.consistency.status, "volatile");
-    assert.ok(result.consistency.score < 70);
-});
-
-test("customer consistency detects erratic demand when swings exceed 60 percent variation", () => {
-    const snapshots = [{
-        snapshotId: "snap-1",
-        snapshotDate: "2026-10-01",
-        capturedAt: "2026-10-01T10:00:00.000Z",
-        rows: [
-            { customer: "Gamma", partNo: "P3", monthlySchedules: { "2026-10": 200, "2026-11": 1500, "2026-12": 300 } }
-        ]
-    }];
-
-    const result = calculateCustomerConsistency(snapshots, "Gamma");
-    assert.ok(result.consistency.cv > 0.60);
-    assert.equal(result.consistency.status, "erratic");
-    assert.ok(result.consistency.score <= 40);
-});
-
-test("horizon drift detects tentative demand erosion when firm orders drop", () => {
+test("compareDifferentSheets compares two sheets with revisions, additions, and removals", () => {
     const snapshots = [
         {
-            snapshotId: "aug-upload",
-            snapshotDate: "2026-08-01",
-            capturedAt: "2026-08-01T10:00:00.000Z",
-            rows: [{ customer: "Alpha", partNo: "P1", monthlySchedules: { "2026-10": 2000 } }]
-        },
-        {
-            snapshotId: "sep-upload",
-            snapshotDate: "2026-09-01",
-            capturedAt: "2026-09-01T10:00:00.000Z",
-            rows: [{ customer: "Alpha", partNo: "P1", monthlySchedules: { "2026-10": 1500 } }]
-        },
-        {
-            snapshotId: "oct-upload",
+            snapshotId: "sheet-1",
+            source: "Motor_Plan_Rev1.xlsx",
             snapshotDate: "2026-10-01",
-            capturedAt: "2026-10-01T10:00:00.000Z",
-            rows: [{ customer: "Alpha", partNo: "P1", monthlySchedules: { "2026-10": 1200 } }]
-        }
-    ];
-
-    const result = calculateCustomerConsistency(snapshots, "Alpha");
-    assert.equal(result.horizonDrift.status, "available");
-    assert.equal(result.horizonDrift.records.length, 1);
-    assert.equal(result.horizonDrift.records[0].earliestDemand, 2000);
-    assert.equal(result.horizonDrift.records[0].latestDemand, 1200);
-    assert.equal(result.horizonDrift.records[0].change, -800);
-    assert.equal(result.horizonDrift.records[0].driftPct, -40);
-    assert.equal(result.horizonDrift.biasType, "Over-Forecasting (Tentative Demand Erosion)");
-    assert.ok(result.insight.includes("tentative forecast erosion"));
-});
-
-test("portfolio consistency aggregates distinct customers with rankings", () => {
-    const snapshots = [{
-        snapshotId: "snap-1",
-        snapshotDate: "2026-10-01",
-        capturedAt: "2026-10-01T10:00:00.000Z",
-        rows: [
-            { customer: "Alpha", partNo: "P1", monthlySchedules: { "2026-10": 1000, "2026-11": 1000 } },
-            { customer: "Beta", partNo: "P2", monthlySchedules: { "2026-10": 100, "2026-11": 900 } }
-        ]
-    }];
-
-    const result = calculateCustomerConsistency(snapshots, "ALL");
-    assert.equal(result.customerBreakdown.length, 2);
-    assert.equal(result.customerBreakdown[0].customer, "Alpha"); // Alpha has higher consistency score
-    assert.equal(result.customerBreakdown[0].status, "consistent");
-    assert.equal(result.customerBreakdown[1].customer, "Beta");
-});
-
-test("customer activity identifies active, zero-order, and dormant accounts", () => {
-    const snapshots = [
-        {
-            snapshotId: "snap-may",
-            snapshotDate: "2026-05-01",
-            capturedAt: "2026-05-01T10:00:00.000Z",
             rows: [
-                { customer: "DormantClient", partNo: "P1", monthlySchedules: { "2026-05": 500 } }
+                { customer: "Whirlpool", partNo: "MTR-01", productDescription: "Motor A", monthlySchedules: { "2026-10": 1000 } },
+                { customer: "Whirlpool", partNo: "MTR-02", productDescription: "Motor B", monthlySchedules: { "2026-10": 500 } },
+                { customer: "Bosch", partNo: "MTR-03", productDescription: "Motor C", monthlySchedules: { "2026-10": 300 } }
             ]
         },
         {
-            snapshotId: "snap-sep",
-            snapshotDate: "2026-09-01",
-            capturedAt: "2026-09-01T10:00:00.000Z",
+            snapshotId: "sheet-2",
+            source: "Motor_Plan_Rev2.xlsx",
+            snapshotDate: "2026-10-10",
             rows: [
-                { customer: "SepOnlyClient", partNo: "P2", monthlySchedules: { "2026-09": 800, "2026-10": 0 } },
-                { customer: "ActiveClient", partNo: "P3", monthlySchedules: { "2026-09": 1000, "2026-10": 1200 } }
-            ]
-        },
-        {
-            snapshotId: "snap-oct",
-            snapshotDate: "2026-10-01",
-            capturedAt: "2026-10-01T10:00:00.000Z",
-            rows: [
-                { customer: "SepOnlyClient", partNo: "P2", monthlySchedules: { "2026-10": 0 } },
-                { customer: "ActiveClient", partNo: "P3", monthlySchedules: { "2026-10": 1500 } }
+                { customer: "Whirlpool", partNo: "MTR-01", productDescription: "Motor A", monthlySchedules: { "2026-10": 1200 } }, // +200
+                { customer: "Whirlpool", partNo: "MTR-02", productDescription: "Motor B", monthlySchedules: { "2026-10": 400 } },  // -100
+                { customer: "Godrej", partNo: "MTR-04", productDescription: "Motor D", monthlySchedules: { "2026-10": 600 } }      // added
+                // MTR-03 removed
             ]
         }
     ];
 
-    const result = calculateCustomerActivity(snapshots, "2026-10");
-    assert.equal(result.summary.totalCustomers, 3);
-    assert.equal(result.summary.activeCount, 1);
-    assert.equal(result.summary.zeroMonthCount, 1);
-    assert.equal(result.summary.dormantCount, 1);
+    const result = compareDifferentSheets(snapshots, {
+        baseSnapshotId: "sheet-1",
+        compareSnapshotId: "sheet-2",
+        month: "2026-10",
+        customer: "ALL"
+    });
 
-    const active = result.customers.find(c => c.customer === "ActiveClient");
-    assert.equal(active.status, "active");
-    assert.equal(active.targetMonthDemand, 1500);
-    assert.equal(active.monthsInactive, 0);
+    assert.equal(result.status, "available");
+    assert.equal(result.summary.baseTotal, 1800);
+    assert.equal(result.summary.compareTotal, 2200);
+    assert.equal(result.summary.netChange, 400);
+    assert.equal(result.summary.partsIncreased, 1);
+    assert.equal(result.summary.partsDecreased, 1);
+    assert.equal(result.summary.partsAdded, 1);
+    assert.equal(result.summary.partsRemoved, 1);
+    assert.ok(result.summary.takeaway.includes("Overall demand shifted"));
 
-    const zeroThisMonth = result.customers.find(c => c.customer === "SepOnlyClient");
-    assert.equal(zeroThisMonth.status, "zero_this_month");
-    assert.equal(zeroThisMonth.targetMonthDemand, 0);
-    assert.equal(zeroThisMonth.lastActiveMonth, "2026-09");
-    assert.equal(zeroThisMonth.monthsInactive, 1);
-
-    const dormant = result.customers.find(c => c.customer === "DormantClient");
-    assert.equal(dormant.status, "dormant");
-    assert.equal(dormant.targetMonthDemand, 0);
-    assert.equal(dormant.lastActiveMonth, "2026-05");
-    assert.equal(dormant.monthsInactive, 5); // 5 months since May
+    // Whirlpool only
+    const wpResult = compareDifferentSheets(snapshots, {
+        baseSnapshotId: "sheet-1",
+        compareSnapshotId: "sheet-2",
+        month: "2026-10",
+        customer: "Whirlpool"
+    });
+    assert.equal(wpResult.summary.baseTotal, 1500);
+    assert.equal(wpResult.summary.compareTotal, 1600);
 });
 
+test("compareWithinSameSheet compares Month A vs Month B in single sheet", () => {
+    const snapshots = [
+        {
+            snapshotId: "single-sheet",
+            source: "Monthly_Horizon.xlsx",
+            snapshotDate: "2026-10-01",
+            rows: [
+                { customer: "Samsung", partNo: "M1", monthlySchedules: { "2026-10": 1000, "2026-11": 1200, "2026-12": 800 } },
+                { customer: "Samsung", partNo: "M2", monthlySchedules: { "2026-10": 500, "2026-11": 400, "2026-12": 300 } }
+            ]
+        }
+    ];
+
+    const result = compareWithinSameSheet(snapshots, {
+        snapshotId: "single-sheet",
+        mode: "months",
+        monthA: "2026-10",
+        monthB: "2026-11"
+    });
+
+    assert.equal(result.status, "available");
+    assert.equal(result.summary.totalA, 1500);
+    assert.equal(result.summary.totalB, 1600);
+    assert.equal(result.summary.netChange, 100);
+    assert.equal(result.summary.partsIncreased, 1);
+    assert.equal(result.summary.partsDecreased, 1);
+    assert.ok(result.summary.takeaway.includes("Oct'26") || result.summary.takeaway.includes("2026-10"));
+});
+
+test("compareWithinSameSheet compares Customer Schedule vs Company Commitment vs Dispatch", () => {
+    const snapshots = [
+        {
+            snapshotId: "ops-sheet",
+            source: "Operations.xlsx",
+            snapshotDate: "2026-10-01",
+            rows: [
+                {
+                    customer: "LG",
+                    partNo: "L1",
+                    monthlySchedules: { "2026-10": 1000 },
+                    monthlyCommitments: { "2026-10": 900 },
+                    monthlyDispatches: { "2026-10": 850 }
+                },
+                {
+                    customer: "LG",
+                    partNo: "L2",
+                    monthlySchedules: { "2026-10": 500 },
+                    monthlyCommitments: { "2026-10": 500 },
+                    monthlyDispatches: { "2026-10": 500 }
+                }
+            ]
+        }
+    ];
+
+    // Schedule vs Commitment
+    const resSchedComm = compareWithinSameSheet(snapshots, {
+        snapshotId: "ops-sheet",
+        mode: "metrics",
+        metricA: "schedule",
+        metricB: "commitment",
+        month: "2026-10"
+    });
+    assert.equal(resSchedComm.status, "available");
+    assert.equal(resSchedComm.summary.totalA, 1500); // Schedule
+    assert.equal(resSchedComm.summary.totalB, 1400); // Commitment
+    assert.equal(resSchedComm.summary.partsShortfall, 1);
+    assert.equal(resSchedComm.summary.shortfallQty, 100);
+
+    // Commitment vs Dispatch
+    const resCommDisp = compareWithinSameSheet(snapshots, {
+        snapshotId: "ops-sheet",
+        mode: "metrics",
+        metricA: "commitment",
+        metricB: "dispatch",
+        month: "2026-10"
+    });
+    assert.equal(resCommDisp.summary.totalA, 1400); // Commitment
+    assert.equal(resCommDisp.summary.totalB, 1350); // Dispatch
+    assert.equal(resCommDisp.summary.partsShortfall, 1);
+    assert.equal(resCommDisp.summary.shortfallQty, 50);
+});
+
+test("getSnapshotComparisonMeta extracts available months and customers", () => {
+    const snapshots = [
+        {
+            snapshotId: "s1",
+            source: "plan.xlsx",
+            rows: [
+                { customer: "CustA", monthlySchedules: { "2026-10": 100, "2026-11": 200 } },
+                { customer: "CustB", monthlySchedules: { "2026-10": 300 } }
+            ]
+        }
+    ];
+    const meta = getSnapshotComparisonMeta(snapshots, "s1");
+    assert.deepEqual(meta.availableMonths, ["2026-10", "2026-11"]);
+    assert.deepEqual(meta.availableCustomers, ["CustA", "CustB"]);
+    assert.equal(meta.snapshots.length, 1);
+});
