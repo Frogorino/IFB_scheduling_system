@@ -794,8 +794,8 @@ app.get("/", (req, res) => {
 app.get("/api/sample-template", (req, res) => {
     try {
         const headers = [[
-            "Sl No", "Customer", "Customer code", "Customer name2", "PART No.", "Helper",
-            "Customer Part No", "Line", "Model", "OEM's", "Description", "Application",
+            "Sl No", "Customer", "Customer code", "PART No.", "Helper",
+            "Customer Part No", "Line", "Description", "Application",
             "Schedule Received Date", "Schedule Start Month", "Schedule End Month", "Schedule Version",
             "Previous Month", "Current Month", "Coming Month", "Original Customer Schedule",
             "Current Customer Schedule", "Actual Production Qty", "Actual Dispatch Qty",
@@ -1143,13 +1143,10 @@ app.get("/api/download-file/:snapshotId", (req, res) => {
                 "Sl No": r.serialNo || i + 1,
                 "Customer": r.customerGroup || r.customer || "",
                 "Customer code": r.customerCode || "",
-                "Customer name2": r.customerName2 || "",
                 "PART No.": r.partNo || "",
                 "Helper": r.helper || "",
                 "Customer Part No": r.customerPartNo || "",
                 "Line": r.line || "",
-                "Model": r.model || "",
-                "OEM's": r.oem || "",
                 "Description": r.productDescription || ""
             };
             if (r.monthlySchedules && typeof r.monthlySchedules === "object") {

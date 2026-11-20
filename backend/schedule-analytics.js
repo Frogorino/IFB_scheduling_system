@@ -34,8 +34,7 @@ function getEntityKey(row) {
         row.customerCode || row.customer || "",
         row.partNo || "",
         row.customerPartNo || "",
-        row.line || "",
-        row.model || ""
+        row.line || ""
     ].map(value => String(value).trim().toLowerCase()).join("|");
 }
 
@@ -554,13 +553,12 @@ function compareDifferentSheets(snapshots, options = {}) {
             : (compareQty > 0 ? 100 : 0);
 
         rows.push({
-            customer: row.customer || row.customerName2 || row.customerCode || "Unknown",
+            customer: row.customer || row.customerCode || "Unknown",
             customerCode: row.customerCode || "",
             partNo: row.partNo || "-",
             customerPartNo: row.customerPartNo || "-",
             productDescription: row.productDescription || "-",
             line: row.line || "-",
-            model: row.model || "-",
             baseQty,
             compareQty,
             change,
@@ -794,13 +792,12 @@ function compareWithinSameSheet(snapshots, options = {}) {
             const percentChange = qtyA > 0 ? (change / qtyA) * 100 : (qtyB > 0 ? 100 : 0);
 
             rows.push({
-                customer: row.customer || row.customerName2 || row.customerCode || "Unknown",
+                customer: row.customer || row.customerCode || "Unknown",
                 customerCode: row.customerCode || "",
                 partNo: row.partNo || "-",
                 customerPartNo: row.customerPartNo || "-",
                 productDescription: row.productDescription || "-",
                 line: row.line || "-",
-                model: row.model || "-",
                 qtyA,
                 qtyB,
                 change,
@@ -893,13 +890,12 @@ function compareWithinSameSheet(snapshots, options = {}) {
             const fulfillmentRate = qtyA > 0 ? (qtyB / qtyA) * 100 : (qtyB >= 0 ? 100 : 0);
 
             rows.push({
-                customer: row.customer || row.customerName2 || row.customerCode || "Unknown",
+                customer: row.customer || row.customerCode || "Unknown",
                 customerCode: row.customerCode || "",
                 partNo: row.partNo || "-",
                 customerPartNo: row.customerPartNo || "-",
                 productDescription: row.productDescription || "-",
                 line: row.line || "-",
-                model: row.model || "-",
                 qtyA,
                 qtyB,
                 diff,

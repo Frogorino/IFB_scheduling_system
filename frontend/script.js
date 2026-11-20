@@ -1204,20 +1204,17 @@ function renderDashboardForCustomer(customer) {
     const tableBody = document.getElementById("scheduleTable");
     if (tableBody) {
         if (!filtered.length) {
-            tableBody.innerHTML = `<tr><td colspan="14" style="text-align: center; color: #94a3b8;">No schedules recorded for ${escapeHTML(label)}</td></tr>`;
+            tableBody.innerHTML = `<tr><td colspan="11" style="text-align: center; color: #94a3b8;">No schedules recorded for ${escapeHTML(label)}</td></tr>`;
         } else {
             tableBody.innerHTML = filtered.slice(0, 10).map((r, idx) => `
                 <tr>
                     <td>${escapeHTML(r.serialNo || idx + 1)}</td>
                     <td><strong>${escapeHTML(r.customerGroup || r.customer || "-")}</strong></td>
                     <td>${escapeHTML(r.customerCode || "-")}</td>
-                    <td>${escapeHTML(r.customerName2 || "-")}</td>
                     <td>${escapeHTML(r.partNo || "-")}</td>
                     <td>${escapeHTML(r.helper || "-")}</td>
                     <td>${escapeHTML(r.customerPartNo || "-")}</td>
                     <td>${escapeHTML(r.line || "-")}</td>
-                    <td>${escapeHTML(r.model || "-")}</td>
-                    <td>${escapeHTML(r.oem || "-")}</td>
                     <td>${escapeHTML(r.productDescription || "-")}</td>
                     <td><strong>${formatNumber(getMonthlyScheduleQuantity(r, month1Key, r.currentMonth || r.customerSchedule || 0))}</strong></td>
                     <td style="background: #fefce8; color: #854d0e;">${formatNumber(getMonthlyScheduleQuantity(r, month2Key, r.comingMonth || 0))}</td>
@@ -1287,8 +1284,8 @@ function renderMasterRecordsTable() {
 
     if (searchTerm) {
         rows = rows.filter(r => [
-            r.serialNo, r.customer, r.customerGroup, r.customerCode, r.customerName2,
-            r.partNo, r.helper, r.customerPartNo, r.line, r.model, r.oem,
+            r.serialNo, r.customer, r.customerGroup, r.customerCode,
+            r.partNo, r.helper, r.customerPartNo, r.line,
             r.productDescription, r.application, r.version, r.deliveryMonth, r.source, r.importedAt
         ].some(value => String(value || "").toLowerCase().includes(searchTerm)));
     }
@@ -1296,7 +1293,7 @@ function renderMasterRecordsTable() {
     if (countEl) countEl.textContent = `Showing ${rows.length} of ${allScheduleRows.length} records`;
 
     if (!rows.length) {
-        tbody.innerHTML = `<tr><td colspan="19" style="text-align: center; padding: 24px; color: #94a3b8;">No schedule records match the current criteria.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="16" style="text-align: center; padding: 24px; color: #94a3b8;">No schedule records match the current criteria.</td></tr>`;
         return;
     }
 
@@ -1312,13 +1309,10 @@ function renderMasterRecordsTable() {
                 <td>${escapeHTML(r.serialNo || displayIndex + 1)}</td>
                 <td><strong>${escapeHTML(r.customerGroup || r.customer || "-")}</strong></td>
                 <td>${escapeHTML(r.customerCode || "-")}</td>
-                <td>${escapeHTML(r.customerName2 || "-")}</td>
                 <td>${escapeHTML(r.partNo || "-")}</td>
                 <td>${escapeHTML(r.helper || "-")}</td>
                 <td>${escapeHTML(r.customerPartNo || "-")}</td>
                 <td>${escapeHTML(r.line || "-")}</td>
-                <td>${escapeHTML(r.model || "-")}</td>
-                <td>${escapeHTML(r.oem || "-")}</td>
                 <td>${escapeHTML(r.productDescription || "-")}</td>
                 <td><strong>${formatNumber(getMonthlyScheduleQuantity(r, month1Key, r.currentMonth || r.customerSchedule || 0))}</strong></td>
                 <td style="background: #fefce8; color: #854d0e;">${formatNumber(getMonthlyScheduleQuantity(r, month2Key, r.comingMonth || 0))}</td>
@@ -1363,8 +1357,8 @@ function exportRecordsToCSV() {
     const month3Key = shiftYearMonth(month1Key, 2);
 
     const headers = [
-        "Sl No", "Customer", "Customer code", "Customer name2", "PART No.", "Helper",
-        "Customer Part No", "Line", "Model", "OEM's", "Description",
+        "Sl No", "Customer", "Customer code", "PART No.", "Helper",
+        "Customer Part No", "Line", "Description",
         formatMonthLabel(month1Key), formatMonthLabel(month2Key), formatMonthLabel(month3Key),
         "Version", "Schedule Received Date", "Actual Dispatch Qty", "Backlog", "Saved At", "Source"
     ];
@@ -1375,13 +1369,10 @@ function exportRecordsToCSV() {
             `"${r.serialNo || idx + 1}"`,
             `"${r.customerGroup || r.customer || ''}"`,
             `"${r.customerCode || ''}"`,
-            `"${r.customerName2 || ''}"`,
             `"${r.partNo || ''}"`,
             `"${r.helper || ''}"`,
             `"${r.customerPartNo || ''}"`,
             `"${r.line || ''}"`,
-            `"${r.model || ''}"`,
-            `"${r.oem || ''}"`,
             `"${r.productDescription || ''}"`,
             getMonthlyScheduleQuantity(r, month1Key, r.currentMonth || r.customerSchedule || 0),
             getMonthlyScheduleQuantity(r, month2Key, r.comingMonth || 0),
